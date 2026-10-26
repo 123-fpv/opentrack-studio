@@ -107,6 +107,30 @@ int main(int argc, char **argv) {
         }
     }
     check(foundWide, "wide frame width is represented in generated geometry");
+    QImage withPillar = plan();
+    {
+        QPainter painter(&withPillar);
+        painter.setPen(QPen(QColor("#3688cf"), 2));
+        painter.drawRect(QRectF(299, 190, 3, 20));
+    }
+    const auto pillars = ot::recognizeTrack(withPillar, manual);
+    check(pillars.detectedCount == 7, "thin turning marker is retained alongside gate frames");
+    bool foundPillar = false;
+    for (const auto &component : pillars.document.gates) {
+        check(component.type != QStringLiteral("flag"),
+              "new image generation never emits a flag asset");
+        if (component.type != QStringLiteral("pillar"))
+            continue;
+        foundPillar = true;
+        check(component.width >= 0.2 && component.width <= 0.8 && component.height == 3.0 &&
+                  component.elevation == 1.5,
+              "turning pillar has a conservative thickness and disclosed estimated height");
+        check(component.extra.value("recognition").toObject().value("heightInferred").toBool(),
+              "pillar height remains explicitly inferred");
+        check(component.extra.value("passSide").toInt() == 1,
+              "unresolved image marker uses the documented right-hand passing default");
+    }
+    check(foundPillar, "thin marker is a solid pillar rather than a flag");
     QImage blank(300, 200, QImage::Format_ARGB32);
     blank.fill(Qt::white);
     const auto empty = ot::recognizeTrack(blank);

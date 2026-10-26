@@ -17,6 +17,7 @@ class Scene3D;
 class StudioWindow : public QMainWindow {
   public:
     StudioWindow();
+    ~StudioWindow() override;
     void applyDocument(const TrackDocument &doc);
     bool runSmokeTest(const QString &directory);
     bool openPath(const QString &path);
@@ -33,6 +34,8 @@ class StudioWindow : public QMainWindow {
     QWidget *properties_ = nullptr;
     QLineEdit *name_ = nullptr;
     QComboBox *scenery_ = nullptr;
+    QComboBox *passSide_ = nullptr;
+    QLabel *passSideLabel_ = nullptr;
     QLabel *gateCount_ = nullptr, *length_ = nullptr, *zoom_ = nullptr, *selectionTitle_ = nullptr,
            *imageStatus_ = nullptr, *notice_ = nullptr;
     QListWidget *order_ = nullptr;

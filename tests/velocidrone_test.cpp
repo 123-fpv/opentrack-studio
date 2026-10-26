@@ -4,7 +4,9 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
+#include <QQuaternion>
 #include <QTemporaryDir>
+#include <QVector3D>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -118,11 +120,14 @@ int main(int argc, char **argv) {
     gate.width = 4.8;
     gate.height = 3.6;
     gate.yaw = -45;
-    ot::Gate flag;
-    flag.id = ot::newGateId();
-    flag.type = QStringLiteral("flag");
-    flag.position = QPointF(40, 10);
-    created.gates = {start, gate, flag};
+    ot::Gate pillar;
+    pillar.id = ot::newGateId();
+    pillar.type = QStringLiteral("pillar");
+    pillar.position = QPointF(40, 10);
+    pillar.width = .4;
+    pillar.height = 3;
+    pillar.elevation = 1.5;
+    created.gates = {start, gate, pillar};
     require(ot::exportVelocidrone(savedPath, created, &error), "export new course");
     ot::TrackDocument roundtrip;
     require(ot::importVelocidrone(savedPath, &roundtrip, &error), "read generated course");
@@ -135,13 +140,128 @@ int main(int argc, char **argv) {
                 "new dimensions roundtrip");
         require(near(roundtrip.gates[1].elevation, 7.45), "new center altitude roundtrip");
         require(near(roundtrip.gates[1].yaw, -45, 0.2), "negative yaw roundtrip");
-        require(roundtrip.gates[2]
-                        .extra.value(QStringLiteral("velocidroneObject"))
-                        .toObject()
-                        .value(QStringLiteral("prefab"))
-                        .toInt() == 170,
-                "flag native prefab");
+        require(roundtrip.gates[2].type == QStringLiteral("pillar"),
+                "native solid and adjacent checkpoint restore logical pillar");
+        require(near(roundtrip.gates[2].position.x(), 40) && near(roundtrip.gates[2].width, .4) &&
+                    near(roundtrip.gates[2].height, 3),
+                "logical pillar retains physical dimensions");
+        const auto native = roundtrip.extra.value(QStringLiteral("velocidroneRoot")).toObject();
+        const auto physical = native.value(QStringLiteral("barriers")).toArray();
+        require(physical.size() == 1, "one pillar creates exactly one solid barrier");
+        if (physical.size() == 1) {
+            const auto block = physical[0].toObject();
+            require(block.value(QStringLiteral("prefab")).toInt() == 2218 &&
+                        !block.contains(QStringLiteral("gate")),
+                    "physical pillar is native BlockBlack barrier, not a race gate or flag");
+            const auto transform = block.value(QStringLiteral("trans")).toObject();
+            require(transform.value(QStringLiteral("scale")).toArray() == QJsonArray{40, 300, 40},
+                    "unit cube stretches to 0.4 by 3 by 0.4 metres");
+            require(transform.value(QStringLiteral("pos")).toArray() == QJsonArray{4000, 0, 1000},
+                    "solid cube transform origin is at its base");
+        }
+        const auto checkpoint = native.value(QStringLiteral("gates")).toArray()[2].toObject();
+        require(checkpoint.value(QStringLiteral("prefab")).toInt() == 88 &&
+                    !checkpoint.value(QStringLiteral("start")).toBool(),
+                "turn progress uses adjacent invisible checkpoint");
+        const auto transform = checkpoint.value(QStringLiteral("trans")).toObject();
+        require(
+            transform.value(QStringLiteral("scale")).toArray() == QJsonArray{100, 150, 120},
+            "invisible YZ helper lane is 2.4 metres wide and matches full 3 metre pillar height");
+        const auto position = transform.value(QStringLiteral("pos")).toArray();
+        const auto rotation = transform.value(QStringLiteral("rot")).toArray();
+        const auto orientation = QQuaternion(static_cast<float>(rotation[0].toDouble() / 1000),
+                                             static_cast<float>(rotation[1].toDouble() / 1000),
+                                             static_cast<float>(rotation[2].toDouble() / 1000),
+                                             static_cast<float>(rotation[3].toDouble() / 1000))
+                                     .normalized();
+        const auto offset = orientation.rotatedVector(QVector3D(0, 0, -1.2f));
+        const double centerX = position[0].toDouble() / 100 + offset.x();
+        require(near(centerX, 41.75) && near(position[1].toDouble() / 100, 1.5),
+                "helper-origin compensation places checkpoint beside pillar center");
+        require(near(centerX - 1.2 - 40 - .2, .35),
+                "nominal checkpoint opening clears solid pillar by 0.35 metres");
+        const auto normal = orientation.rotatedVector(QVector3D(1, 0, 0));
+        require(near(normal.x(), 0, .002) && near(normal.z(), 1, .002),
+                "native helper X-normal follows editor positive Z yaw zero");
     }
+    require(ot::exportVelocidrone(savedPath, roundtrip, &error),
+            "reexport imported physical pillar");
+    ot::TrackDocument pairedAgain;
+    require(ot::importVelocidrone(savedPath, &pairedAgain, &error), "reimport paired pillar");
+    require(pairedAgain.extra.value(QStringLiteral("velocidroneRoot"))
+                    .toObject()
+                    .value(QStringLiteral("barriers"))
+                    .toArray()
+                    .size() == 1,
+            "reexport does not duplicate owned solid barrier");
+    if (pairedAgain.gates.size() == 3) {
+        pairedAgain.gates[2].position += QPointF(5, 0);
+        pairedAgain.gates[2].width = .6;
+        pairedAgain.gates[2].height = 4;
+        pairedAgain.gates[2].elevation = 2;
+        pairedAgain.gates[2].yaw = 90;
+        pairedAgain.gates[2].extra.insert(QStringLiteral("passSide"), -1);
+        require(ot::exportVelocidrone(savedPath, pairedAgain, &error),
+                "move resize rotate and reverse pillar passage side");
+        ot::TrackDocument modifiedPillar;
+        require(ot::importVelocidrone(savedPath, &modifiedPillar, &error),
+                "restore modified pillar pairing");
+        require(modifiedPillar.gates.size() == 3 &&
+                    modifiedPillar.gates[2].type == QStringLiteral("pillar") &&
+                    modifiedPillar.gates[2].extra.value(QStringLiteral("passSide")).toInt() == -1,
+                "left-side passage roundtrips at positive 90 degree yaw");
+        if (modifiedPillar.gates.size() == 3) {
+            const auto point = ot::gatePassagePosition(modifiedPillar.gates[2]);
+            require(near(point.x(), 45) && near(point.y(), 11.85),
+                    "shared route helper matches exported left-side checkpoint");
+            auto copy = modifiedPillar.gates[2];
+            copy.id = ot::newGateId();
+            copy.position += QPointF(3, 3);
+            modifiedPillar.gates.append(copy);
+            require(ot::exportVelocidrone(savedPath, modifiedPillar, &error),
+                    "duplicate logical pillar");
+            ot::TrackDocument duplicated;
+            require(ot::importVelocidrone(savedPath, &duplicated, &error),
+                    "restore duplicate pillars");
+            require(duplicated.extra.value(QStringLiteral("velocidroneRoot"))
+                            .toObject()
+                            .value(QStringLiteral("barriers"))
+                            .toArray()
+                            .size() == 2,
+                    "duplicate gets its own physical cube");
+            modifiedPillar.gates.removeLast();
+            modifiedPillar.gates.removeLast();
+            require(ot::exportVelocidrone(savedPath, modifiedPillar, &error),
+                    "delete imported pillar");
+            ot::TrackDocument removed;
+            require(ot::importVelocidrone(savedPath, &removed, &error),
+                    "restore course after pillar deletion");
+            require(removed.extra.value(QStringLiteral("velocidroneRoot"))
+                        .toObject()
+                        .value(QStringLiteral("barriers"))
+                        .toArray()
+                        .isEmpty(),
+                    "deleting pillar removes owned physical cube");
+        }
+    }
+    const auto legacyPath = directory.filePath(QStringLiteral("legacy-flag.trk"));
+    require(writeFile(legacyPath,
+                      "ZQUmrb8Dw13zB9S8edPtbNN1v3L0QVxOLqtHrDzXBK//"
+                      "rbhPFqbFubEDk5iDSQhgZHfiPZfbc9BpLyYdQhbOd4iyrIi2J8rfQbrzF9clKfkedsnpcD5qBGo1"
+                      "Fi9CzNbLKruOFEyHOQT/03PMviu8mPZOowG9WW3CpAPgpb4DN3tsBPE292GTUar4uH4PSUlSbW/"
+                      "uDldFXFyve/xvZX0s1/mAXcx+THQEoVB++wyII9o="),
+            "write independently encoded legacy flag fixture");
+    ot::TrackDocument legacy;
+    require(ot::importVelocidrone(legacyPath, &legacy, &error) && legacy.gates.size() == 1 &&
+                legacy.gates[0].type == QStringLiteral("flag"),
+            "legacy native 170 flags remain importable");
+    require(ot::exportVelocidrone(savedPath, legacy, &error) &&
+                readFile(savedPath) == readFile(legacyPath),
+            "legacy imported flag retains exact native data");
+    auto obsolete = created;
+    obsolete.gates[2].type = QStringLiteral("flag");
+    require(!ot::exportVelocidrone(savedPath, obsolete, &error),
+            "new flags cannot masquerade as physical turn pillars");
     const QByteArray sentinel("keep existing file");
     require(writeFile(savedPath, sentinel), "write sentinel");
     created.gates[1].type = QStringLiteral("cube");
@@ -170,8 +290,9 @@ int main(int argc, char **argv) {
     require(unchanged.name == QStringLiteral("Keep me"), "corrupt import preserves document");
     require(!ot::importVelocidrone(originalPath, nullptr, &error), "null output rejected");
     if (!failures)
-        std::cout << "PASS: native schema, independent AES fixture, geometry, preservation and "
-                     "invalid input.\n";
+        std::cout << "PASS: native schema, independent AES fixtures, physical pillars, adjacent "
+                     "checkpoints, "
+                     "pairing ownership, legacy flags and invalid input.\n";
     return failures ? 1 : 0;
 #endif
 }

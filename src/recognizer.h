@@ -8,7 +8,8 @@ namespace ot {
 
 // Local, deterministic recognition of coloured gate symbols in overhead plans.
 // It does not reconstruct heights, identify arbitrary photographs, or recover
-// authoritative checkpoint order from an unannotated picture.
+// authoritative checkpoint order from an unannotated picture. Thin turning
+// markers become estimated solid pillars, not flag assets.
 struct RecognitionOptions {
     double metersPerPixel = 0.05;
     int minComponentPixels = 10;

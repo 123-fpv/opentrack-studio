@@ -50,6 +50,16 @@ QVector3D point3(const Gate &gate) {
             static_cast<float>(gate.position.y())};
 }
 
+QVector3D passage3(const Gate &gate) {
+    const QPointF passage = gatePassagePosition(gate);
+    return {static_cast<float>(passage.x()), static_cast<float>(gate.elevation),
+            static_cast<float>(passage.y())};
+}
+
+float selectionHaloRadius(const Gate &gate) {
+    return static_cast<float>(std::max(1.1, gate.width * .72));
+}
+
 Vertex vertex(const QVector3D &p, const QColor &color, float shade = 1) {
     return {p.x(),
             p.y(),
@@ -117,6 +127,11 @@ void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
     const float w = static_cast<float>(gate.width), h = static_cast<float>(gate.height);
     const QColor blue = selected ? QColor("#1867d9") : QColor("#3985ed");
     const QColor color = gate.type == QStringLiteral("start") ? QColor("#13a98e") : blue;
+    if (gate.type == QStringLiteral("pillar")) {
+        // A stretched native black cube: no openings, flag cloth or decorative geometry.
+        box(batch, gate, {0, 0, 0}, {w, h, w}, selected ? QColor("#2b465e") : QColor("#343b45"));
+        return;
+    }
     if (gate.type == QStringLiteral("flag")) {
         box(batch, gate, {0, 0, 0}, {.065f, h, .065f}, QColor("#47566b"));
         box(batch, gate, {0, -h / 2 + .045f, 0}, {.46f, .09f, .46f}, QColor("#8496ac"));
@@ -332,6 +347,35 @@ struct Scene3D::Impl {
         matrices();
         if (!document)
             return {};
+        // The visible halo is also a drag target, particularly for narrow posts.
+        // It only exists after selection, preserving the two-press interaction.
+        if (const auto *active = gate(selected)) {
+            const float haloRadius = selectionHaloRadius(*active);
+            const QVector3D base(static_cast<float>(active->position.x()), .055f,
+                                 static_cast<float>(active->position.y()));
+            QPolygonF outer, inner, center;
+            for (int i = 0; i < 72; ++i) {
+                const float angle = static_cast<float>(i * Pi / 36);
+                const QVector3D direction(std::cos(angle), 0, std::sin(angle));
+                QPointF a, b, c;
+                if (project(base + direction * haloRadius * 1.16f, &a) &&
+                    project(base + direction * haloRadius * .86f, &b) &&
+                    project(base + direction * haloRadius, &c)) {
+                    outer.append(a);
+                    inner.append(b);
+                    center.append(c);
+                }
+            }
+            if (outer.size() == 72) {
+                bool haloHit = outer.containsPoint(position, Qt::OddEvenFill) &&
+                               !inner.containsPoint(position, Qt::OddEvenFill);
+                for (int i = 0; i < center.size() && !haloHit; ++i)
+                    haloHit =
+                        segmentDistance(position, center[i], center[(i + 1) % center.size()]) < 5.0;
+                if (haloHit)
+                    return active->id;
+            }
+        }
         QString best;
         double bestScore = std::numeric_limits<double>::max();
         for (const auto &item : document->gates) {
@@ -391,6 +435,10 @@ struct Scene3D::Impl {
                                  half * 2);
                 bounds = hasBounds ? bounds.united(one) : one;
                 hasBounds = true;
+                if (item.type == QStringLiteral("pillar")) {
+                    const QPointF passage = gatePassagePosition(item);
+                    bounds = bounds.united(QRectF(passage - QPointF(1.5, 1.5), QSizeF(3, 3)));
+                }
             }
             if (!document->background.isNull() && document->showBackground) {
                 const QRectF image(
@@ -451,8 +499,9 @@ struct Scene3D::Impl {
                 const float a = static_cast<float>(item.yaw * Pi / 180);
                 const QVector3D direction(std::sin(a), 0, std::cos(a));
                 const QVector3D side(std::cos(a), 0, -std::sin(a));
-                const QVector3D arrowBase(static_cast<float>(item.position.x()), .04f,
-                                          static_cast<float>(item.position.y()));
+                const QPointF passage = gatePassagePosition(item);
+                const QVector3D arrowBase(static_cast<float>(passage.x()), .04f,
+                                          static_cast<float>(passage.y()));
                 const QColor arrowColor =
                     item.id == selected ? QColor("#1968d9") : QColor("#91b5df");
                 triangle(solids, arrowBase + direction * 1.15f,
@@ -474,7 +523,7 @@ struct Scene3D::Impl {
                          {static_cast<float>(item.position.x()), .03f,
                           static_cast<float>(item.position.y())},
                          point3(item), QColor("#8aa4c3"));
-                    const float haloRadius = static_cast<float>(std::max(1.1, item.width * .72));
+                    const float haloRadius = selectionHaloRadius(item);
                     const QVector3D base(static_cast<float>(item.position.x()), .055f,
                                          static_cast<float>(item.position.y()));
                     for (int i = 0; i < 72; ++i) {
@@ -501,7 +550,7 @@ struct Scene3D::Impl {
                         index = (index % count + count) % count;
                     else
                         index = std::clamp(index, qsizetype(0), count - 1);
-                    return point3(document->gates[index]);
+                    return passage3(document->gates[index]);
                 };
                 for (qsizetype segment = 0; segment < segments; ++segment) {
                     const auto p0 = at(segment - 1), p1 = at(segment), p2 = at(segment + 1),
@@ -709,7 +758,7 @@ struct Scene3D::Impl {
         drawLines(grid, .8);
         if (const auto *active = gate(selected)) {
             QPolygonF outer, inner;
-            const float haloRadius = static_cast<float>(std::max(1.1, active->width * .72));
+            const float haloRadius = selectionHaloRadius(*active);
             for (int i = 0; i < 72; ++i) {
                 const float angle = static_cast<float>(i * Pi / 36);
                 QPointF a, b;
@@ -746,6 +795,43 @@ struct Scene3D::Impl {
                 return (eye - point3(*a)).lengthSquared() > (eye - point3(*b)).lengthSquared();
             });
             for (const auto *item : ordered) {
+                if (item->type == QStringLiteral("pillar")) {
+                    // Reuse the solid geometry in the fallback instead of an open frame.
+                    Batch column;
+                    buildGate(column, *item, item->id == selected);
+                    struct Face {
+                        QPolygonF polygon;
+                        QColor color;
+                        double depth = 0;
+                    };
+                    std::vector<Face> faces;
+                    for (size_t i = 0; i + 2 < column.vertices.size(); i += 3) {
+                        Face face;
+                        for (size_t corner = 0; corner < 3; ++corner) {
+                            const auto &v = column.vertices[i + corner];
+                            QPointF point;
+                            double depth = 0;
+                            if (project({v.x, v.y, v.z}, &point, &depth)) {
+                                face.polygon.append(point);
+                                face.depth += depth;
+                            }
+                        }
+                        const auto &color = column.vertices[i];
+                        face.color = QColor::fromRgbF(std::clamp(color.r, 0.0f, 1.0f),
+                                                      std::clamp(color.g, 0.0f, 1.0f),
+                                                      std::clamp(color.b, 0.0f, 1.0f));
+                        if (face.polygon.size() == 3)
+                            faces.push_back(std::move(face));
+                    }
+                    std::sort(faces.begin(), faces.end(),
+                              [](const Face &a, const Face &b) { return a.depth > b.depth; });
+                    for (const auto &face : faces) {
+                        painter.setPen(QPen(face.color, .35));
+                        painter.setBrush(face.color);
+                        painter.drawPolygon(face.polygon);
+                    }
+                    continue;
+                }
                 const float w = static_cast<float>(item->width / 2),
                             h = static_cast<float>(item->height / 2);
                 QPolygonF polygon;

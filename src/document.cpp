@@ -310,6 +310,8 @@ QString gateTypeName(const QString &type) {
         return QStringLiteral("叠门");
     if (type == QStringLiteral("cube"))
         return QStringLiteral("立方门");
+    if (type == QStringLiteral("pillar"))
+        return QStringLiteral("转向柱");
     if (type == QStringLiteral("flag"))
         return QStringLiteral("绕旗");
     if (type == QStringLiteral("dive"))
@@ -331,13 +333,13 @@ TrackDocument demoDocument() {
     const DemoGate layout[] = {
         {-29, 13, "start", 1.2, 2.4, 2.4},    {-33, 3, "standard", 1.2, 4.8, 2.4},
         {-26, -9, "standard", 1.2, 3.0, 3.0}, {-19, -19, "standard", 1.2, 2.4, 2.4},
-        {-9, -24, "flag", 1.2, 2.4, 2.4},     {3, -25, "standard", 2.5, 2.4, 4.8},
+        {-9, -24, "pillar", 1.5, .4, 3.0},    {3, -25, "standard", 2.5, 2.4, 4.8},
         {16, -22, "standard", 1.2, 2.4, 2.4}, {25, -13, "standard", 1.2, 2.4, 2.4},
         {31, -3, "standard", 1.2, 3.0, 3.0},  {33, 8, "standard", 1.2, 4.8, 2.4},
-        {24, 17, "standard", 1.2, 2.4, 2.4},  {12, 21, "flag", 1.2, 2.4, 2.4},
+        {24, 17, "standard", 1.2, 2.4, 2.4},  {12, 21, "pillar", 1.5, .4, 3.0},
         {2, 16, "standard", 3.5, 2.4, 2.4},   {6, 6, "standard", 2.5, 2.4, 4.8},
         {-1, 0, "standard", 1.2, 2.4, 2.4},   {-10, 7, "standard", 1.2, 2.4, 2.4},
-        {-13, 19, "standard", 1.2, 3.0, 3.0}, {-22, 22, "flag", 1.2, 2.4, 2.4}};
+        {-13, 19, "standard", 1.2, 3.0, 3.0}, {-22, 22, "pillar", 1.5, .4, 3.0}};
     constexpr qsizetype count = sizeof(layout) / sizeof(layout[0]);
     for (qsizetype i = 0; i < count; ++i) {
         Gate gate;
@@ -358,24 +360,33 @@ TrackDocument demoDocument() {
     return document;
 }
 
+QPointF gatePassagePosition(const Gate &gate) {
+    if (gate.type != QStringLiteral("pillar"))
+        return gate.position;
+    const double yaw = gate.yaw * 3.14159265358979323846 / 180.0;
+    const double side = gate.extra.value(QStringLiteral("passSide")).toInt(1) < 0 ? -1.0 : 1.0;
+    const QPointF right(std::cos(yaw), -std::sin(yaw));
+    return gate.position + right * ((gate.width / 2.0 + 1.55) * side);
+}
+
 QPainterPath routePath(const TrackDocument &document) {
     QPainterPath path;
     const qsizetype count = document.gates.size();
     if (count == 0)
         return path;
-    path.moveTo(document.gates.first().position);
+    path.moveTo(gatePassagePosition(document.gates.first()));
     if (count == 1)
         return path;
     if (count == 2) {
-        path.lineTo(document.gates.at(1).position);
+        path.lineTo(gatePassagePosition(document.gates.at(1)));
         if (document.closedLoop)
-            path.lineTo(document.gates.first().position);
+            path.lineTo(gatePassagePosition(document.gates.first()));
         return path;
     }
     const auto at = [&document, count](qsizetype index) {
         if (document.closedLoop)
-            return document.gates.at((index % count + count) % count).position;
-        return document.gates.at(std::clamp(index, qsizetype(0), count - 1)).position;
+            return gatePassagePosition(document.gates.at((index % count + count) % count));
+        return gatePassagePosition(document.gates.at(std::clamp(index, qsizetype(0), count - 1)));
     };
     const qsizetype segmentCount = document.closedLoop ? count : count - 1;
     for (qsizetype i = 0; i < segmentCount; ++i) {

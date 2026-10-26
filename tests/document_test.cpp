@@ -122,6 +122,42 @@ int main(int argc, char **argv) {
           "open two-gate route length is Euclidean distance");
     empty.closedLoop = true;
     check(std::abs(ot::routeLength(empty) - 10.0) < 1e-6, "closed two-gate route returns to start");
+
+    ot::Gate pillar;
+    pillar.id = ot::newGateId();
+    pillar.type = QStringLiteral("pillar");
+    pillar.position = QPointF(10, 20);
+    pillar.width = .4;
+    pillar.height = 3;
+    pillar.elevation = 1.5;
+    check(ot::gatePassagePosition(pillar) == QPointF(11.75, 20),
+          "pillar passage defaults to the local right side of the solid post");
+    const double clearance =
+        ot::gatePassagePosition(pillar).x() - pillar.position.x() - pillar.width / 2 - 2.4 / 2;
+    check(std::abs(clearance - .35) < 1e-6, "native 2.4m checkpoint lane clears the post by 0.35m");
+    pillar.extra.insert(QStringLiteral("passSide"), -1);
+    check(ot::gatePassagePosition(pillar) == QPointF(8.25, 20),
+          "left-side pillar passage mirrors the checkpoint lane");
+    pillar.yaw = 90;
+    check((ot::gatePassagePosition(pillar) - QPointF(10, 21.75)).manhattanLength() < 1e-6,
+          "pillar passage rotates with the native yaw convention");
+    pillar.yaw = 0;
+    pillar.extra.insert(QStringLiteral("passSide"), 0);
+    check(ot::gatePassagePosition(pillar) == QPointF(11.75, 20),
+          "nonnegative side normalizes to the right side");
+    ot::TrackDocument passageTrack;
+    b.position = QPointF(11.75, 25);
+    passageTrack.gates = {pillar, b};
+    passageTrack.closedLoop = false;
+    const auto passagePath = ot::routePath(passageTrack);
+    check(passagePath.elementAt(0).x == 11.75 && passagePath.elementAt(0).y == 20,
+          "route starts at the pillar passage instead of inside the solid post");
+    check(std::abs(ot::routeLength(passageTrack) - 5.0) < 1e-6,
+          "route length follows the offset passage");
+    b.extra.insert(QStringLiteral("passSide"), -1);
+    check(ot::gatePassagePosition(b) == b.position,
+          "ordinary gates retain their physical passage position");
+
     const auto demoPath = ot::routePath(original);
     check(demoPath.elementCount() > original.gates.size(), "demo route uses cubic curves");
     check(std::isfinite(ot::routeLength(original)) && ot::routeLength(original) > 200.0,

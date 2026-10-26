@@ -4,6 +4,7 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPolygonF>
 #include <QRadialGradient>
 #include <QScrollBar>
 #include <QStyleOptionGraphicsItem>
@@ -19,8 +20,10 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
     p->setRenderHint(QPainter::Antialiasing);
     p->translate(b.center());
     p->scale(b.width() / 64., b.height() / 56.);
-    const QColor c =
-        type == "start" ? QColor("#0caa8c") : (type == "flag" ? QColor("#eb9a2b") : tint);
+    const QColor c = type == "start"    ? QColor("#0caa8c")
+                     : type == "pillar" ? QColor("#4f91d9")
+                     : type == "flag"   ? QColor("#eb9a2b")
+                                        : tint;
     if (selected) {
         p->setPen(QPen(QColor(37, 119, 237, 85), 1.2, Qt::DashLine));
         p->setBrush(QColor(37, 119, 237, 12));
@@ -29,7 +32,20 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
     p->setPen(Qt::NoPen);
     p->setBrush(QColor(31, 57, 93, 22));
     p->drawEllipse(QRectF(-25, 17, 52, 9));
-    if (type == "flag") {
+    if (type == "pillar") {
+        // A solid square post, with the same silhouette as a stretched native cube.
+        p->setPen(QPen(c, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p->setBrush(QColor("#202b37"));
+        p->drawPolygon(
+            QPolygonF({QPointF(6, -22), QPointF(13, -26), QPointF(13, 17), QPointF(6, 21)}));
+        p->setBrush(QColor("#566578"));
+        p->drawPolygon(
+            QPolygonF({QPointF(-8, -22), QPointF(-1, -26), QPointF(13, -26), QPointF(6, -22)}));
+        p->setBrush(QColor("#303945"));
+        p->drawRect(QRectF(-8, -22, 14, 43));
+        p->setPen(QPen(QColor("#8498ae"), 1.4, Qt::SolidLine, Qt::RoundCap));
+        p->drawLine(QPointF(-11, 23), QPointF(16, 23));
+    } else if (type == "flag") {
         p->setPen(QPen(QColor("#52657c"), 2.6, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(QPointF(-5, 21), QPointF(-5, -22));
         QPainterPath f;

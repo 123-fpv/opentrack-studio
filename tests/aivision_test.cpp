@@ -108,6 +108,62 @@ int main(int argc, char **argv) {
     check(!parsed.warnings.isEmpty(), "AI geometry is always accompanied by review warnings");
     check(parsed.document.extra.value("aiVision").toObject().value("reviewRequired").toBool(),
           "draft metadata marks human review mandatory");
+    auto pillarDraft = draft();
+    auto pillarTrack = pillarDraft["track"].toObject();
+    auto pillar = gate(4, 8, 45);
+    pillar["type"] = "pillar";
+    pillar["width"] = 0.4;
+    pillar["height"] = 3.0;
+    pillar["elevation"] = 1.5;
+    pillar["passSide"] = -1;
+    pillarTrack["gates"] = QJsonArray{gate(), pillar};
+    pillarDraft["track"] = pillarTrack;
+    const auto pillarResult = ot::parseVisionResponse(response(pillarDraft), settings);
+    check(pillarResult.ok && pillarResult.document.gates.size() == 2,
+          "solid turning pillars are supported course components");
+    if (pillarResult.document.gates.size() == 2) {
+        const auto &post = pillarResult.document.gates[1];
+        check(post.type == "pillar" && post.width == 0.4 && post.height == 3.0 &&
+                  post.elevation == 1.5,
+              "provided pillar thickness, upright height and centre altitude are preserved");
+        check(post.extra.value("passSide").toInt() == -1,
+              "provided left passing side is preserved independently of physical column position");
+    }
+    auto invalidSidePillar = pillar;
+    invalidSidePillar["passSide"] = 0;
+    auto invalidSideDraft = pillarDraft;
+    auto invalidSideTrack = pillarTrack;
+    invalidSideTrack["gates"] = QJsonArray{invalidSidePillar};
+    invalidSideDraft["track"] = invalidSideTrack;
+    check(!ot::parseVisionResponse(response(invalidSideDraft), settings).ok,
+          "passing side zero is rejected rather than accepted as a direction");
+    invalidSidePillar["passSide"] = "right";
+    invalidSideTrack["gates"] = QJsonArray{invalidSidePillar};
+    invalidSideDraft["track"] = invalidSideTrack;
+    check(!ot::parseVisionResponse(response(invalidSideDraft), settings).ok,
+          "passing side must be a numeric plus or minus one");
+    pillar["width"] = 0.65;
+    pillar["height"] = 4.4;
+    pillar["elevation"] = 2.2;
+    pillar["type"] = "flag";
+    pillar.remove("passSide");
+    pillarTrack["gates"] = QJsonArray{pillar};
+    pillarDraft["track"] = pillarTrack;
+    const auto legacyPillar = ot::parseVisionResponse(response(pillarDraft), settings);
+    check(legacyPillar.ok && legacyPillar.document.gates.size() == 1,
+          "legacy flag output is normalized instead of creating a flag asset");
+    if (legacyPillar.document.gates.size() == 1) {
+        const auto &post = legacyPillar.document.gates[0];
+        check(post.type == "pillar" && post.width == 0.65 && post.height == 4.4 &&
+                  post.elevation == 2.2,
+              "legacy normalization does not silently replace provided geometry");
+        check(post.extra.value("aiVision").toObject().value("normalizedFrom").toString() == "flag",
+              "legacy conversion provenance is retained for review");
+        check(post.extra.value("passSide").toInt() == 1,
+              "omitted pillar passing side defaults to local right");
+        check(legacyPillar.warnings.join(' ').contains(QStringLiteral("转向柱")),
+              "legacy flag conversion is explicitly disclosed");
+    }
     check(ot::parseVisionResponse(response(draft(), true), settings).ok, "fenced JSON accepted");
     check(!ot::parseVisionResponse(response(draft(), false, "length"), settings).ok,
           "truncated output cannot be silently accepted");

@@ -14,7 +14,7 @@ struct Gate {
     QString type = QStringLiteral("standard");
     QPointF position;
     double elevation = 1.2; // Gate centre altitude, in metres.
-    double width = 2.4;
+    double width = 2.4;     // Pillars use this same side length on both the X and Z axes.
     double height = 2.4;
     double yaw = 0.0; // Degrees: 0 faces +Z (position.y), 90 faces +X (position.x).
     QString label;
@@ -45,6 +45,9 @@ bool loadProject(const QString &path, TrackDocument *document, QString *error = 
 TrackDocument demoDocument();
 QString gateTypeName(const QString &type);
 QString newGateId();
+// Pillar passages use a 2.4 m checkpoint lane beside the solid post, with 0.35 m
+// clearance. extra.passSide selects local right (+1, default) or local left (-1).
+QPointF gatePassagePosition(const Gate &gate);
 double routeLength(const TrackDocument &document);
 QPainterPath routePath(const TrackDocument &document);
 

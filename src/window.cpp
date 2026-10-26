@@ -116,6 +116,30 @@ StudioWindow::StudioWindow() {
     connect(&undo_, &QUndoStack::cleanChanged, this,
             [this](bool clean) { setWindowModified(!clean); });
 }
+StudioWindow::~StudioWindow() {
+    // Members are destroyed before QObject destroys its child widgets. Remove
+    // their callbacks while the document and undo stack are still alive.
+    for (auto* child : findChildren<QObject*>())
+        QObject::disconnect(child, nullptr, this, nullptr);
+    canvas_->onSelection = {};
+    canvas_->onGateMoved = {};
+    canvas_->onGestureBegin = {};
+    canvas_->onGestureEnd = {};
+    canvas_->onPlace = {};
+    canvas_->onZoom = {};
+    canvas_->setPreview(false);
+    canvas_->setDocument(nullptr);
+    if (scene3d_) {
+        scene3d_->onSelection = {};
+        scene3d_->onGateMoved = {};
+        scene3d_->onGestureBegin = {};
+        scene3d_->onGestureEnd = {};
+        scene3d_->onPlace = {};
+        scene3d_->onZoom = {};
+        scene3d_->setPreview(false);
+        scene3d_->setDocument(nullptr);
+    }
+}
 void StudioWindow::setupUi() {
     auto *root = new QWidget;
     auto *all = new QVBoxLayout(root);
@@ -326,7 +350,7 @@ void StudioWindow::setupUi() {
     height_ = number(.2, 100);
     const QList<QPair<QString, QDoubleSpinBox *>> props = {
         {"X 位置 / m", x_}, {"Z 位置 / m", z_},   {"中心高度 / m", alt_},
-        {"朝向 / °", yaw_}, {"门宽 / m", width_}, {"门高 / m", height_}};
+        {"朝向 / °", yaw_}, {"宽度 / m", width_}, {"高度 / m", height_}};
     for (int i = 0; i < props.size(); ++i) {
         grid->addWidget(label(props[i].first, "fieldLabel"), (i / 2) * 2, i % 2);
         grid->addWidget(props[i].second, (i / 2) * 2 + 1, i % 2);
@@ -334,6 +358,21 @@ void StudioWindow::setupUi() {
                 [this] { editSelection(); });
     }
     pl->addLayout(grid);
+    passSideLabel_ = label("绕柱通过侧", "fieldLabel");
+    passSide_ = new QComboBox;
+    passSide_->addItems({"右侧绕过", "左侧绕过"});
+    pl->addWidget(passSideLabel_);
+    pl->addWidget(passSide_);
+    connect(passSide_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (updating_ || selected_.isEmpty())
+            return;
+        const QString id = selected_;
+        edit("调整绕柱侧", [id, index](TrackDocument &d) {
+            for (auto &g : d.gates)
+                if (g.id == id && g.type == "pillar")
+                    g.extra.insert("passSide", index == 0 ? 1 : -1);
+        });
+    });
     ll->addWidget(properties_);
     properties_->hide();
     ll->addStretch();
@@ -461,7 +500,7 @@ void StudioWindow::setupUi() {
                                     {"standard", "窄门", "1.8 × 2.4 m", 1.8, 2.4},
                                     {"standard", "高门", "2.4 × 3.6 m", 2.4, 3.6},
                                     {"standard", "低门", "2.4 × 1.2 m", 2.4, 1.2},
-                                    {"flag", "转向旗", "原生旗帜", 2.4, 2.4},
+                                    {"pillar", "转向柱", "0.4 × 3.0 m", .4, 3.0},
                                     {"standard", "微型门", "1.2 × 1.2 m", 1.2, 1.2}};
     for (int i = 0; i < defs.size(); ++i) {
         const auto d = defs[i];
@@ -642,9 +681,16 @@ void StudioWindow::updateSelection(const QString &id) {
         scene3d_->selectGate(id);
     properties_->setVisible(gate != nullptr);
     updating_ = true;
+    const bool pillar = gate && gate->type == "pillar";
+    passSideLabel_->setVisible(pillar);
+    passSide_->setVisible(pillar);
+    if (pillar)
+        passSide_->setCurrentIndex(gate->extra.value("passSide").toInt(1) < 0 ? 1 : 0);
     for (auto *spin : {x_, z_, alt_, yaw_, width_, height_})
         spin->setEnabled(gate != nullptr);
-    selectionTitle_->setText(gate ? QString("门架属性 · #%1").arg(row + 1) : "门架属性 · 未选择");
+    selectionTitle_->setText(
+        gate ? QString("%1属性 · #%2").arg(gateTypeName(gate->type)).arg(row + 1)
+             : "门架属性 · 未选择");
     if (gate) {
         x_->setValue(gate->position.x());
         z_->setValue(gate->position.y());

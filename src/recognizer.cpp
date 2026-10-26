@@ -297,6 +297,7 @@ RecognitionResult recognizeTrack(const QImage &input, const RecognitionOptions &
 
     std::vector<double> symbolWidths;
     bool hasWideCandidates = false;
+    bool hasPillarCandidates = false;
     for (const auto &c : candidates) {
         const double aspect =
             double(std::max(c.width(), c.height())) / std::min(c.width(), c.height());
@@ -327,7 +328,16 @@ RecognitionResult recognizeTrack(const QImage &input, const RecognitionOptions &
         const int minor = std::min(c.width(), c.height());
         const double aspect = double(major) / minor;
         if (aspect > 3.2 && minor <= 6) {
-            gate.type = QStringLiteral("flag");
+            gate.type = QStringLiteral("pillar");
+            // The thin marker gives a rough footprint, not its upright height.
+            // Keep the inferred column small and explicitly request review.
+            gate.width = std::clamp(std::min(c.width() * scaleX, c.height() * scaleY) *
+                                        document.metersPerPixel,
+                                    0.2, 0.8);
+            gate.height = 3.0;
+            gate.elevation = 1.5;
+            gate.extra.insert(QStringLiteral("passSide"), 1);
+            hasPillarCandidates = true;
         } else if (aspect > 1.9 && medianSymbolWidth > 0 &&
                    std::max(c.width() * scaleX, c.height() * scaleY) > medianSymbolWidth * 1.45) {
             // A wide blue symbol cannot establish whether the real object has
@@ -361,8 +371,10 @@ RecognitionResult recognizeTrack(const QImage &input, const RecognitionOptions &
     document.gates = ordered;
     for (int i = 0; i < document.gates.size(); ++i) {
         auto &gate = document.gates[i];
-        gate.label = gate.width > 2.4 ? QStringLiteral("宽门 %1（待确认）").arg(i + 1)
-                                      : QStringLiteral("门 %1").arg(i + 1);
+        gate.label = gate.type == QStringLiteral("pillar")
+                         ? QStringLiteral("转向柱 %1（待确认）").arg(i + 1)
+                     : gate.width > 2.4 ? QStringLiteral("宽门 %1（待确认）").arg(i + 1)
+                                        : QStringLiteral("门 %1").arg(i + 1);
         if (document.gates.size() > 1) {
             const QPointF previous =
                 document.gates.size() == 2
@@ -397,6 +409,10 @@ RecognitionResult recognizeTrack(const QImage &input, const RecognitionOptions &
         if (hasWideCandidates)
             result.warnings << QStringLiteral(
                 "较宽的符号暂按 4.8 米宽单门生成，请确认是否实际为双门或组合门。");
+        if (hasPillarCandidates)
+            result.warnings << QStringLiteral(
+                "细长标记按实心转向柱生成；柱宽为图示估算，高度暂按 3 米、中心高度 1.5 "
+                "米，绕行侧暂按右侧，请校对实际尺寸和绕行方向。");
     }
     return result;
 }
