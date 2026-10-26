@@ -6,6 +6,7 @@
 #include <QKeyEvent>
 #include <QMatrix4x4>
 #include <QMouseEvent>
+#include <QSet>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -181,14 +182,18 @@ int main(int argc, char **argv) {
     framed.gates = {redGate};
     scene.setDocument(&framed);
     scene.fitTrack();
-    const auto withoutBackground = redBounds(scene.exportImage());
+    const QImage solidGround = scene.exportImage();
+    const auto withoutBackground = redBounds(solidGround);
     framed.background = QImage(1200, 900, QImage::Format_RGB32);
-    framed.background.fill(Qt::white);
+    framed.background.fill(QColor("#10e030"));
+    framed.showBackground = true;
     framed.backgroundOrigin = {-900, -700};
     framed.metersPerPixel = 2;
     scene.refreshGeometry();
     scene.fitTrack();
     const auto withBackground = redBounds(scene.exportImage());
+    require(scene.exportImage() == solidGround, "3D ground never displays the source image, even "
+                                                "for an older project with reference enabled");
     require(withoutBackground.width() > 20 && withoutBackground.height() > 20,
             "background-fit fixture has a clearly visible colored gate");
     require(withBackground.width() >= withoutBackground.width() * .9 &&
@@ -222,6 +227,95 @@ int main(int argc, char **argv) {
         require(compound.gates[0].position == QPointF(),
                 "compound selection preserves the group's physical center");
     }
+    ot::TrackDocument maneuver;
+    maneuver.closedLoop = false;
+    maneuver.routeStepsDefined = true;
+    maneuver.gates = {ot::makeGate(QStringLiteral("ladder"))};
+    maneuver.routeSteps = ot::gateManeuverSteps(maneuver.gates[0], QStringLiteral("lower-upper"));
+    scene.setDocument(&maneuver);
+    scene.fitTrack();
+    scene.selectGate(maneuver.gates[0].id);
+    const auto unselectedPass = scene.exportImage();
+    int routeSelections = 0;
+    scene.onRouteSelection = [&](QString) { ++routeSelections; };
+    scene.selectRouteStep(maneuver.routeSteps[0].id);
+    require(scene.selectedRouteStep() == maneuver.routeSteps[0].id && routeSelections == 1,
+            "ordered pass can be selected independently of the physical assembly");
+    require(scene.selectedGate() == maneuver.gates[0].id && scene.exportImage() != unselectedPass,
+            "selected crossing highlights its actual opening and retains the physical halo");
+    scene.selectRouteStep(maneuver.routeSteps[0].id);
+    require(routeSelections == 1, "route selection bridge ignores the already-selected step");
+    scene.selectRouteStep({});
+    const QPointF preservedManeuverPosition = maneuver.gates[0].position;
+    for (int y = 60; y < scene.height() - 55 && scene.selectedRouteStep().isEmpty(); y += 8)
+        for (int x = 30; x < scene.width() - 30 && scene.selectedRouteStep().isEmpty(); x += 8) {
+            mouse(scene, QEvent::MouseButtonPress, {qreal(x), qreal(y)}, Qt::LeftButton,
+                  Qt::LeftButton);
+            mouse(scene, QEvent::MouseButtonRelease, {qreal(x), qreal(y)}, Qt::LeftButton,
+                  Qt::NoButton);
+        }
+    require(!scene.selectedRouteStep().isEmpty() &&
+                maneuver.gates[0].position == preservedManeuverPosition,
+            "clicking a numbered crossing selects a route step without dragging the assembly");
+    scene.setRouteVisible(false);
+    const auto withoutTakeoff = scene.exportImage();
+    maneuver.takeoff.enabled = true;
+    maneuver.takeoff.position = {-2, -2};
+    maneuver.takeoff.yaw = 90;
+    scene.refreshGeometry();
+    require(scene.exportImage() != withoutTakeoff,
+            "independent takeoff marker remains visible when the lap route is hidden");
+    scene.setPlacement(QStringLiteral("__takeoff"));
+    const auto beforeTakeoffGhost = scene.exportImage();
+    mouse(scene, QEvent::MouseMove, {scene.width() / 2., scene.height() * .75}, Qt::NoButton,
+          Qt::NoButton);
+    require(scene.exportImage() != beforeTakeoffGhost && maneuver.gates.size() == 1,
+            "takeoff placement previews a marker without creating a gate");
+    bool takeoffPlaced = false;
+    scene.onPlace = [&](QString type, QPointF position, double, double) {
+        takeoffPlaced =
+            type == QStringLiteral("__takeoff") && snapped(position.x()) && snapped(position.y());
+    };
+    mouse(scene, QEvent::MouseButtonPress, {scene.width() / 2., scene.height() * .75},
+          Qt::LeftButton, Qt::LeftButton);
+    mouse(scene, QEvent::MouseButtonRelease, {scene.width() / 2., scene.height() * .75},
+          Qt::LeftButton, Qt::NoButton);
+    require(takeoffPlaced && maneuver.gates.size() == 1,
+            "takeoff placement emits the dedicated callback type and preserves physical objects");
+    scene.setPlacement({});
+    scene.setRouteVisible(true);
+    scene.onRouteSelection = {};
+    ot::TrackDocument clustered;
+    clustered.closedLoop = false;
+    clustered.routeStepsDefined = true;
+    clustered.gates = {ot::makeGate()};
+    for (int i = 0; i < 8; ++i) {
+        auto step = ot::gateManeuverSteps(clustered.gates[0], QStringLiteral("single"))[0];
+        step.reverse = i % 2;
+        clustered.routeSteps.append(step);
+    }
+    scene.setDocument(&clustered);
+    scene.fitTrack();
+    QSet<QString> pickedPasses;
+    scene.onRouteSelection = [&](QString id) {
+        if (!id.isEmpty())
+            pickedPasses.insert(id);
+    };
+    for (int scan = 0; scan < 2 && pickedPasses.size() < clustered.routeSteps.size(); ++scan)
+        for (int y = 60;
+             y < scene.height() - 55 && pickedPasses.size() < clustered.routeSteps.size(); y += 7)
+            for (int x = 20;
+                 x < scene.width() - 20 && pickedPasses.size() < clustered.routeSteps.size();
+                 x += 7) {
+                mouse(scene, QEvent::MouseButtonPress, {qreal(x), qreal(y)}, Qt::LeftButton,
+                      Qt::LeftButton);
+                mouse(scene, QEvent::MouseButtonRelease, {qreal(x), qreal(y)}, Qt::LeftButton,
+                      Qt::NoButton);
+            }
+    require(
+        pickedPasses.size() == clustered.routeSteps.size(),
+        "all repeated-window number badges remain individually pickable after collision layout");
+    scene.onRouteSelection = {};
     ot::TrackDocument large;
     for (int i = 0; i < 500; ++i) {
         ot::Gate item;

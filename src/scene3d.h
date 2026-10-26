@@ -30,6 +30,8 @@ class Scene3D : public QOpenGLWidget, protected QOpenGLFunctions {
     void fitTrack();
     void selectGate(const QString &);
     QString selectedGate() const;
+    void selectRouteStep(const QString &);
+    QString selectedRouteStep() const;
     void setPlacement(QString, double width = 2.4, double height = 2.4);
     void setSnap(bool);
     void setRouteVisible(bool);
@@ -39,6 +41,7 @@ class Scene3D : public QOpenGLWidget, protected QOpenGLFunctions {
     QImage exportImage();
 
     std::function<void(QString)> onSelection;
+    std::function<void(QString)> onRouteSelection;
     std::function<void()> onGestureBegin, onGestureEnd;
     std::function<void(QString, QPointF)> onGateMoved;
     std::function<void(QString, QPointF, double, double)> onPlace;

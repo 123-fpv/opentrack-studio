@@ -5,14 +5,19 @@
             "detectedCount": 13,
             "method": "local-color-components-v1",
             "orderHeuristic": "nearest-neighbour-and-2opt",
+            "rejectedFragments": 0,
             "requiresReview": true
         }
     },
     "format": "OpenTrackStudio",
     "gates": [
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#E60000",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -28,20 +33,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "3134bdfd-a1bc-408b-b4af-a43d6e04fe9f",
+            "height": 3,
+            "id": "b9f20d9e-149b-4803-b25b-0d1159f480c5",
             "label": "门 1",
             "position": [
-                -16.80555534387502,
-                -9.664812345208611
+                -21.006944179843778,
+                -12.081015431510764
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": -51.34019174590991
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -57,20 +66,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "e0b3ee9a-0efe-43b8-87ab-638107b2ac42",
+            "height": 3,
+            "id": "7c5d9c1d-62f7-46bc-96a4-b2722857bd3b",
             "label": "门 2",
             "position": [
-                -20.529693274909505,
-                -2.2165364831396452
+                -25.66211659363688,
+                -2.770670603924554
             ],
             "type": "standard",
-            "width": 2.4,
-            "yaw": -14.036243467926491
+            "width": 3,
+            "yaw": -14.036243467926477
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -86,20 +99,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "dd364c24-8648-49aa-ae63-f6ff5a6ce490",
+            "height": 3,
+            "id": "79aff9fd-00d2-4046-9ec2-a2ffaad09bf9",
             "label": "门 3",
             "position": [
-                -20.943486378357782,
-                6.886911792722422
+                -26.179357972947226,
+                8.60863974090303
             ],
             "type": "standard",
-            "width": 2.4,
-            "yaw": 34.5085229876684
+            "width": 3,
+            "yaw": 34.508522987668414
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -115,20 +132,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "921d599e-11ed-4521-be0c-1853e41ada28",
+            "height": 3,
+            "id": "2db5cc7a-bcba-4eb6-aa1c-43f51d1d61ea",
             "label": "门 4",
             "position": [
-                -11.426244999047437,
-                11.02484282720518
+                -14.282806248809294,
+                13.781053534006475
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": 101.30993247402021
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -144,20 +165,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "fb577de7-d627-4b96-a1bd-00a4da3191e9",
+            "height": 3,
+            "id": "4043d849-4776-4104-95fb-beba789a6e67",
             "label": "门 5",
             "position": [
-                -8.529693274909505,
-                4.404153172032768
+                -10.662116593636881,
+                5.505191465040959
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": 131.6335393365702
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -173,20 +198,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "2739aa0f-e6c8-4f01-8e6b-87c5b0e2c47e",
+            "height": 3,
+            "id": "3b0cb75b-7f37-4cc1-8ab0-ef57cb42a37f",
             "label": "门 6",
             "position": [
-                -0.2538312059439889,
-                1.0938083444465612
+                -0.31728900742998434,
+                1.3672604305582041
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": 67.5205656028969
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -202,20 +231,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "ea5b6064-72b5-471b-a904-97941b7fd828",
+            "height": 3,
+            "id": "6b920f36-881a-4a2e-b704-ec2b6007cbd7",
             "label": "门 7",
             "position": [
-                3.470306725090495,
-                9.369670413412077
+                4.337883406363119,
+                11.712088016765094
             ],
             "type": "standard",
-            "width": 2.4,
-            "yaw": 51.1155035662854
+            "width": 3,
+            "yaw": 51.11550356628541
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -231,20 +264,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "d0317e40-28e8-43f4-b552-9367cc3ba909",
+            "height": 3,
+            "id": "73dc987c-2516-465c-b7dc-e15b98cb2eb5",
             "label": "门 8",
             "position": [
-                12.57375500095256,
-                11.438635930653458
+                15.717193751190706,
+                14.298294913316823
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": 94.1849161251184
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -260,20 +297,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "ff39df4a-f30d-4c66-ba55-cc32767e5bc5",
+            "height": 3,
+            "id": "8d24ea1b-50b4-4c62-b9db-8d6c15e12153",
             "label": "门 9",
             "position": [
-                20.435823966469805,
-                8.128291103067252
+                25.54477995808726,
+                10.160363878834062
             ],
             "type": "standard",
-            "width": 2.4,
-            "yaw": 152.02052561151982
+            "width": 3,
+            "yaw": 152.02052561151987
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -289,20 +330,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "d46421f8-f155-427e-a319-47c24c61b702",
+            "height": 3,
+            "id": "8b22a595-f187-42bf-9213-dda766b0b333",
             "label": "门 10",
             "position": [
-                19.608237759573257,
-                -1.8027433796913677
+                24.51029719946657,
+                -2.2534292246142087
             ],
             "type": "standard",
-            "width": 2.4,
-            "yaw": -156.29735404903377
+            "width": 3,
+            "yaw": -156.29735404903374
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -318,20 +363,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "48e03e96-3612-45a2-93ee-76bd3f41dd8f",
+            "height": 3,
+            "id": "ae18934d-1eb8-4871-ba72-bbb17c4f71e6",
             "label": "门 11",
             "position": [
-                12.987548104400837,
-                -8.837226138312058
+                16.234435130501048,
+                -11.046532672890073
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": -119.74488129694224
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -347,20 +396,24 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "5cbf165e-06e4-480b-bcc2-5be459b4863a",
+            "height": 3,
+            "id": "c6679885-2199-455b-abf1-6c16282659bf",
             "label": "门 12",
             "position": [
-                2.228927414745666,
-                -11.73377786244999
+                2.7861592684320797,
+                -14.667222328062488
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": -98.91492695714787
         },
         {
-            "elevation": 1.2,
+            "elevation": 1.6,
             "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
                 "recognition": {
                     "confidence": 0.72,
                     "directionInferred": true,
@@ -376,30 +429,41 @@
                     "typeInferred": true
                 }
             },
-            "height": 2.4,
-            "id": "4af69722-9721-4541-abe4-16bf5c7cb8f5",
+            "height": 3,
+            "id": "ad8bafc7-1a6a-440b-a549-d44ee69ccbab",
             "label": "门 13",
             "position": [
-                -8.11590017146123,
-                -12.147570965898264
+                -10.144875214326536,
+                -15.184463707372831
             ],
             "type": "standard",
-            "width": 2.4,
+            "width": 3,
             "yaw": -83.79655209830817
         }
     ],
     "name": "图片生成的赛道",
     "scenery": "Football Stadium",
+    "takeoff": {
+        "elevation": 0,
+        "enabled": true,
+        "extra": {
+        },
+        "position": [
+            -4,
+            -6
+        ],
+        "yaw": 0
+    },
     "version": 1,
     "view": {
         "backgroundOpacity": 0.35,
         "backgroundOrigin": [
-            -28.96551724137931,
-            -18.620689655172413
+            -36.206896551724135,
+            -23.275862068965516
         ],
         "closedLoop": true,
         "gridSize": 1,
-        "metersPerPixel": 0.041379310344827586,
-        "showBackground": true
+        "metersPerPixel": 0.05172413793103448,
+        "showBackground": false
     }
 }

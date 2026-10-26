@@ -172,13 +172,13 @@ class GateItem final : public QGraphicsObject {
         p->rotate(gate.yaw);
         p->setBrush(isSelected() ? QColor("#222222") : QColor("#ffffff"));
         p->setPen(QPen(QColor("#bfbfbf"), .06));
-        p->drawRoundedRect(QRectF(-.48, -.43, .96, .86), .26, .26);
+        p->drawRoundedRect(QRectF(-.8, -.43, 1.6, .86), .26, .26);
         QFont f("Segoe UI");
         f.setPixelSize(12);
         p->setFont(f);
         p->scale(.07, .07);
         p->setPen(isSelected() ? Qt::white : QColor("#333333"));
-        p->drawText(QRectF(-6.7, -6, 13.4, 12), Qt::AlignCenter, QString::number(ordinal + 1));
+        p->drawText(QRectF(-11.5, -6, 23, 12), Qt::AlignCenter, QString("G%1").arg(ordinal + 1));
         p->restore();
     }
     QVariant itemChange(GraphicsItemChange c, const QVariant &value) override {
@@ -310,7 +310,9 @@ void TrackCanvas::rebuild() {
     }
     scene_->blockSignals(false);
     refreshRoute();
-    const QRectF content = scene_->itemsBoundingRect();
+    QRectF content = scene_->itemsBoundingRect();
+    if (doc_ && doc_->takeoff.enabled)
+        content = content.united(QRectF(doc_->takeoff.position - QPointF(2, 2), QSizeF(4, 4)));
     scene_->setSceneRect(content.united(QRectF(-38, -25, 76, 50)).adjusted(-12, -12, 12, 12));
     viewport()->update();
 }
@@ -331,7 +333,10 @@ void TrackCanvas::fitTrack() {
     QRectF r;
     for (const auto &g : doc_->gates)
         r = r.united(QRectF(g.position - QPointF(3, 3), QSizeF(6, 6)));
-    if (!doc_->background.isNull())
+    if (doc_->takeoff.enabled)
+        r = r.united(QRectF(doc_->takeoff.position - QPointF(2, 2), QSizeF(4, 4)));
+    r = r.united(routePath(*doc_).boundingRect());
+    if (doc_->gates.isEmpty() && doc_->showBackground && !doc_->background.isNull())
         r = r.united(
             QRectF(doc_->backgroundOrigin, QSizeF(doc_->background.size()) * doc_->metersPerPixel));
     if (r.isEmpty())
@@ -405,33 +410,53 @@ QImage TrackCanvas::exportImage() const {
 }
 void TrackCanvas::drawBackground(QPainter *p, const QRectF &r) {
     p->fillRect(r, QColor("#f7f7f7"));
-    const double step = (transform().m11() < 5) ? 5 : 1;
-    auto pen = QPen(QColor("#e5e5e5"));
-    pen.setCosmetic(true);
-    p->setPen(pen);
-    for (double x = std::floor(r.left() / step) * step; x < r.right(); x += step)
-        p->drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
-    for (double y = std::floor(r.top() / step) * step; y < r.bottom(); y += step)
-        p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
-    pen.setColor(QColor("#cecece"));
-    p->setPen(pen);
-    for (double x = std::floor(r.left() / 10) * 10; x < r.right(); x += 10)
-        p->drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
-    for (double y = std::floor(r.top() / 10) * 10; y < r.bottom(); y += 10)
-        p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
 }
 void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
     p->save();
     p->resetTransform();
+    if (doc_) {
+        if (doc_->takeoff.enabled) {
+            const QPointF marker = mapFromScene(doc_->takeoff.position);
+            p->setBrush(Qt::white);
+            p->setPen(QPen(QColor("#181818"), 2));
+            p->drawEllipse(marker, 12, 12);
+            p->drawText(QRectF(marker.x() - 10, marker.y() - 10, 20, 20), Qt::AlignCenter, "T");
+            p->drawText(QRectF(marker.x() + 15, marker.y() - 12, 110, 24), "独立起飞点");
+        }
+        if (routeVisible_) {
+            QHash<QString, int> overlapping;
+            int number = 0;
+            for (const auto &step : effectiveRouteSteps(*doc_)) {
+                if (step.kind != "pass")
+                    continue;
+                const auto geometry = routeStepGeometry(*doc_, step);
+                if (!geometry.valid)
+                    continue;
+                const QPointF center =
+                    mapFromScene(QPointF(geometry.position.x(), geometry.position.z()));
+                const QString key =
+                    QString("%1:%2").arg(qRound(center.x() / 12)).arg(qRound(center.y() / 12));
+                const int row = overlapping[key]++;
+                const QPointF badge = center + QPointF(15, -18 - row * 20);
+                p->setBrush(QColor("#202020"));
+                p->setPen(Qt::NoPen);
+                p->drawRoundedRect(QRectF(badge.x(), badge.y(), 28, 18), 4, 4);
+                p->setPen(Qt::white);
+                p->drawText(QRectF(badge.x(), badge.y(), 28, 18), Qt::AlignCenter,
+                            QString::number(++number));
+            }
+        }
+    }
     p->setPen(QColor("#666666"));
     QFont f("Microsoft YaHei UI", 9);
     p->setFont(f);
     p->drawText(QRectF(20, 14, 280, 22), Qt::AlignLeft | Qt::AlignVCenter,
                 QStringLiteral("XY 俯视图 · Z 为高度"));
-    p->drawText(QRectF(20, viewport()->height() - 36, 470, 22), Qt::AlignLeft | Qt::AlignVCenter,
-                placement_.isEmpty()
-                    ? QStringLiteral("先点击选中，再按住拖动 · 滚轮缩放 · 中键 / 空格平移")
-                    : QStringLiteral("点击画布放置门架 · Esc 返回选择工具"));
+    p->drawText(
+        QRectF(20, viewport()->height() - 36, 470, 22), Qt::AlignLeft | Qt::AlignVCenter,
+        placement_.isEmpty() ? QStringLiteral("先点击选中，再按住拖动 · 滚轮缩放 · 中键 / 空格平移")
+        : placement_ == "__takeoff" ? QStringLiteral("单击放置独立起飞点 · Esc 返回选择工具")
+                                    : QStringLiteral("点击画布放置门架 · Esc 返回选择工具"));
     const double ppm = transform().m11();
     if (ppm > 0 && std::isfinite(ppm)) {
         const double desired = 70. / ppm;

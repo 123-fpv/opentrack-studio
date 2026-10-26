@@ -254,6 +254,475 @@ struct DiagramAttempt {
     bool applicable = false;
 };
 
+struct PrintedTrace {
+    QVector<QPointF> points;
+    double coverage = 0;
+    int occlusions = 0;
+    bool ambiguous = false;
+};
+
+// Trace the ORIGINAL coloured line, including the parts inside symbols. Closing
+// an entire symbol neighbourhood would erase precisely the loops that distinguish
+// lower/upper and left/right passages. Thin first, reconnect only aligned ends,
+// then consume edges in tangent order rather than taking a shortest path.
+PrintedTrace tracePrintedLine(const std::vector<unsigned char> &raw, int width, int height,
+                              const QRect &field, const std::vector<DiagramNode> &nodes,
+                              double cell, QPointF launch, QPointF firstGate) {
+    PrintedTrace result;
+    const size_t total = raw.size();
+    auto clipped = raw;
+    for (int p = 0; p < width * height; ++p)
+        if (!field.contains(QPoint(p % width, p / width)))
+            clipped[size_t(p)] = 0;
+    std::vector<unsigned char> skeleton(total, 0);
+    for (const auto &part : inkBlobs(std::move(clipped), width, height, 3)) {
+        bool inside = false;
+        if (part.shape.count < cell * .9)
+            for (const auto &node : nodes)
+                if (blobBounds(node.shape).intersects(blobBounds(part.shape))) {
+                    inside = true;
+                    break;
+                }
+        // A few antialias pixels inside an opaque stock are not a usable shaft.
+        // Keeping them creates two unreliable endpoint tangents that can steal
+        // the true occlusion continuation at higher source resolutions.
+        if (part.shape.count >= cell * .9 ||
+            (inside && part.shape.count >= std::max(3.0, cell * .12)))
+            for (int p : part.pixels)
+                skeleton[size_t(p)] = 1;
+    }
+    const QRect roi = field.intersected(QRect(1, 1, width - 2, height - 2));
+    std::vector<int> remove;
+    for (int iteration = 0; iteration < 64; ++iteration) {
+        bool changed = false;
+        for (int phase = 0; phase < 2; ++phase) {
+            remove.clear();
+            for (int y = roi.top(); y <= roi.bottom(); ++y)
+                for (int x = roi.left(); x <= roi.right(); ++x) {
+                    const int p = y * width + x;
+                    if (!skeleton[size_t(p)])
+                        continue;
+                    const int n[8] = {skeleton[size_t(p - width)], skeleton[size_t(p - width + 1)],
+                                      skeleton[size_t(p + 1)],     skeleton[size_t(p + width + 1)],
+                                      skeleton[size_t(p + width)], skeleton[size_t(p + width - 1)],
+                                      skeleton[size_t(p - 1)],     skeleton[size_t(p - width - 1)]};
+                    int count = 0, transitions = 0;
+                    for (int i = 0; i < 8; ++i) {
+                        count += n[i];
+                        transitions += !n[i] && n[(i + 1) % 8];
+                    }
+                    if (count < 2 || count > 6 || transitions != 1)
+                        continue;
+                    const bool keep = phase == 0 ? n[0] * n[2] * n[4] || n[2] * n[4] * n[6]
+                                                 : n[0] * n[2] * n[6] || n[0] * n[4] * n[6];
+                    if (!keep)
+                        remove.push_back(p);
+                }
+            changed |= !remove.empty();
+            for (int p : remove)
+                skeleton[size_t(p)] = 0;
+        }
+        if (!changed)
+            break;
+    }
+    std::vector<int> indices(total, -1), pixels;
+    for (int p = 0; p < width * height; ++p)
+        if (skeleton[size_t(p)]) {
+            if (pixels.size() == 250000) {
+                result.ambiguous = true;
+                return result;
+            }
+            indices[size_t(p)] = int(pixels.size());
+            pixels.push_back(p);
+        }
+    if (pixels.empty())
+        return result;
+    const auto point = [&](int v) {
+        const int p = pixels[size_t(v)];
+        return QPointF(p % width, p / width);
+    };
+    std::vector<std::set<int>> graph(pixels.size());
+    for (int v = 0; v < int(pixels.size()); ++v) {
+        const int p = pixels[size_t(v)], x = p % width, y = p / width;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                if ((!dx && !dy) || x + dx < 0 || y + dy < 0 || x + dx >= width || y + dy >= height)
+                    continue;
+                const int q = p + dy * width + dx;
+                if (indices[size_t(q)] < 0)
+                    continue;
+                // Do not create a triangular shortcut around a one-pixel bend.
+                if (dx && dy && (skeleton[size_t(p + dx)] || skeleton[size_t(p + dy * width)]))
+                    continue;
+                graph[size_t(v)].insert(indices[size_t(q)]);
+            }
+    }
+    const auto outward = [&](int v) {
+        int previous = -1, current = v;
+        for (int i = 0; i < std::max(4, int(cell * .22)); ++i) {
+            int next = -1;
+            for (int candidate : graph[size_t(current)])
+                if (candidate != previous) {
+                    if (next >= 0) {
+                        next = -2;
+                        break;
+                    }
+                    next = candidate;
+                }
+            if (next < 0)
+                break;
+            previous = current;
+            current = next;
+        }
+        const auto d = point(v) - point(current);
+        const double length = std::hypot(d.x(), d.y());
+        return length > .001 ? d / length : QPointF();
+    };
+    std::vector<int> endpoints;
+    for (int v = 0; v < int(pixels.size()); ++v)
+        if (graph[size_t(v)].size() == 1)
+            endpoints.push_back(v);
+    if (endpoints.size() > 2048) {
+        result.ambiguous = true;
+        return result;
+    }
+    struct Gap {
+        double score;
+        int a, b;
+    };
+    std::vector<Gap> gaps;
+    std::vector<QPointF> tangents;
+    for (int v : endpoints)
+        tangents.push_back(outward(v));
+    for (size_t i = 0; i < endpoints.size(); ++i)
+        for (size_t j = i + 1; j < endpoints.size(); ++j) {
+            const auto a = point(endpoints[i]), b = point(endpoints[j]), delta = b - a;
+            const double length = std::hypot(delta.x(), delta.y());
+            if (length < 1 || length > cell * .86)
+                continue;
+            if (length > cell * .38) {
+                bool inSymbol = false;
+                const QPoint midpoint = ((a + b) / 2).toPoint();
+                for (const auto &node : nodes)
+                    inSymbol |= blobBounds(node.shape)
+                                    .adjusted(int(-cell * .3), int(-cell * .3), int(cell * .3),
+                                              int(cell * .3))
+                                    .contains(midpoint);
+                if (!inSymbol)
+                    continue;
+            }
+            const auto direction = delta / length;
+            const double aa = QPointF::dotProduct(tangents[i], direction),
+                         ab = -QPointF::dotProduct(tangents[j], direction);
+            if (aa > .1 && ab > .1)
+                gaps.push_back({length / (.2 + aa + ab), endpoints[i], endpoints[j]});
+        }
+    std::sort(gaps.begin(), gaps.end(),
+              [](const Gap &a, const Gap &b) { return a.score < b.score; });
+    std::set<int> joined;
+    for (const auto &gap : gaps)
+        if (!joined.count(gap.a) && !joined.count(gap.b)) {
+            graph[size_t(gap.a)].insert(gap.b);
+            graph[size_t(gap.b)].insert(gap.a);
+            joined.insert(gap.a);
+            joined.insert(gap.b);
+            ++result.occlusions;
+        }
+    // Printed arrow heads create short leaf branches. Keep the shaft and the
+    // long input tail; a short cycle is retained and consumed by the edge walk.
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        std::set<int> discarded;
+        for (int v = 0; v < int(pixels.size()); ++v) {
+            if (graph[size_t(v)].size() != 1)
+                continue;
+            std::vector<int> branch{v};
+            int previous = -1, current = v;
+            double length = 0;
+            while (graph[size_t(current)].size() <= 2 && branch.size() < size_t(cell * .5 + 3)) {
+                int next = -1;
+                for (int candidate : graph[size_t(current)])
+                    if (candidate != previous)
+                        next = candidate;
+                if (next < 0)
+                    break;
+                length += std::sqrt(squaredDistance(point(next), point(current)));
+                previous = current;
+                current = next;
+                branch.push_back(current);
+            }
+            if (graph[size_t(current)].size() >= 3 && length <= cell * .29)
+                discarded.insert(branch.begin(), branch.end() - 1);
+        }
+        if (discarded.empty())
+            break;
+        for (int v : discarded) {
+            for (int next : graph[size_t(v)])
+                graph[size_t(next)].erase(v);
+            graph[size_t(v)].clear();
+        }
+    }
+    int start = -1;
+    double closest = std::numeric_limits<double>::infinity();
+    int edges = 0;
+    for (int v = 0; v < int(pixels.size()); ++v) {
+        edges += int(graph[size_t(v)].size());
+        if (!graph[size_t(v)].empty()) {
+            const double d = squaredDistance(point(v), launch);
+            if (d < closest) {
+                closest = d;
+                start = v;
+            }
+        }
+    }
+    if (start < 0)
+        return result;
+    std::set<std::pair<int, int>> consumed;
+    std::vector<int> walk{start};
+    int current = start;
+    const auto edge = [](int a, int b) { return std::make_pair(std::min(a, b), std::max(a, b)); };
+    for (size_t iteration = 0; iteration < pixels.size() * 3; ++iteration) {
+        const auto incoming =
+            walk.size() >= 5 ? point(current) - point(walk[walk.size() - 5]) : firstGate - launch;
+        int next = -1;
+        double best = -std::numeric_limits<double>::infinity();
+        for (int candidate : graph[size_t(current)]) {
+            if (consumed.count(edge(current, candidate)))
+                continue;
+            int previous = current, look = candidate;
+            for (int i = 0; i < 4; ++i) {
+                if (graph[size_t(look)].size() != 2)
+                    break;
+                const int further = *graph[size_t(look)].begin() == previous
+                                        ? *graph[size_t(look)].rbegin()
+                                        : *graph[size_t(look)].begin();
+                previous = look;
+                look = further;
+            }
+            auto d = point(look) - point(current);
+            const double length = std::hypot(d.x(), d.y());
+            const double score = length > .001 ? QPointF::dotProduct(incoming, d / length) : -1;
+            if (score > best) {
+                best = score;
+                next = candidate;
+            }
+        }
+        if (next < 0)
+            break;
+        consumed.insert(edge(current, next));
+        current = next;
+        walk.push_back(current);
+    }
+    result.coverage = edges ? double(consumed.size()) / (edges / 2) : 0;
+    result.ambiguous |= result.coverage < .90;
+    // Virtual occlusion edges need intermediate samples for narrow, edge-on
+    // windows. They carry the same inferred-status metadata as the whole trace.
+    result.points.push_back(point(walk.front()));
+    for (size_t i = 1; i < walk.size(); ++i) {
+        const auto a = point(walk[i - 1]), b = point(walk[i]);
+        const int samples = std::max(1, int(std::ceil(std::sqrt(squaredDistance(a, b)))));
+        for (int j = 1; j <= samples; ++j)
+            result.points.push_back(a + (b - a) * (double(j) / samples));
+    }
+    return result;
+}
+
+struct WindowVisit {
+    int column = 0, level = 0, first = 0, last = 0;
+    bool interrupted = false;
+};
+
+QVector<RouteStep> traceComponentPasses(Gate &gate, const DiagramNode &node,
+                                        const PrintedTrace &trace, double cell, int *uncertain) {
+    const auto metrics = gateFrameMetrics(gate);
+    const QRectF box(blobBounds(node.shape));
+    QVector<WindowVisit> visits;
+    int firstInside = -1, lastInside = -1;
+    const bool cube =
+        gate.type == QStringLiteral("cube") || gate.type == QStringLiteral("cube-stack");
+    const double yaw = qDegreesToRadians(gate.yaw);
+    for (int i = 0; i < trace.points.size(); ++i) {
+        const auto p = trace.points[i];
+        if (!box.contains(p))
+            continue;
+        if (firstInside < 0)
+            firstInside = i;
+        lastInside = i;
+        if (cube)
+            continue;
+        const double cellWidth = box.width() / metrics.columns,
+                     cellHeight = box.height() / metrics.levels;
+        const int imageColumn =
+                      std::clamp(int((p.x() - box.left()) / cellWidth), 0, metrics.columns - 1),
+                  imageRow =
+                      std::clamp(int((p.y() - box.top()) / cellHeight), 0, metrics.levels - 1);
+        // The central aperture excludes a line merely skimming a stock beam.
+        // On a side-view symbol, interpolated occlusion samples still cross it.
+        const QRectF core(box.left() + (imageColumn + .18) * cellWidth,
+                          box.top() + (imageRow + .18) * cellHeight, cellWidth * .64,
+                          cellHeight * .64);
+        if (!core.contains(p))
+            continue;
+        const int column = std::cos(yaw) < -.5 ? metrics.columns - 1 - imageColumn : imageColumn,
+                  level = metrics.levels - 1 - imageRow;
+        if (!visits.isEmpty() && visits.last().column == column && visits.last().level == level) {
+            visits.last().interrupted |= i - visits.last().last > cell * .6;
+            visits.last().last = i;
+        } else
+            visits.push_back({column, level, i, i});
+    }
+    auto evidence = gate.extra.value(QStringLiteral("recognition")).toObject();
+    QJsonArray observed;
+    for (const auto &visit : visits)
+        observed.push_back(QJsonObject{{QStringLiteral("column"), visit.column},
+                                       {QStringLiteral("level"), visit.level},
+                                       {QStringLiteral("traceStart"), visit.first},
+                                       {QStringLiteral("traceEnd"), visit.last}});
+    evidence.insert(QStringLiteral("observedWindows"), observed);
+    evidence.insert(QStringLiteral("routeEvidence"), QStringLiteral("original-magenta-skeleton"));
+    evidence.insert(QStringLiteral("traceOcclusions"), trace.occlusions);
+    QString pattern;
+    int cubeBodyLevel = 0;
+    bool ambiguous = trace.ambiguous || firstInside < 0;
+    for (const auto &visit : visits)
+        ambiguous |= visit.interrupted;
+    if (cube && firstInside >= 0 && lastInside > firstInside) {
+        const auto entry = trace.points[firstInside], exit = trace.points[lastInside];
+        // A roof/body transition must be visible. The physical cube type alone
+        // is never sufficient evidence for a gravity maneuver.
+        const bool entryRoof =
+            entry
+                .y()<box.top() + box.width() * .40,
+                     exitRoof = exit.y() < box.top() + box.width() * .40, entryBody = entry.y()>
+                    box.top() +
+            box.width() * .45,
+                   exitBody = exit.y() > box.top() + box.width() * .45;
+        if (entryRoof && exitBody)
+            pattern = QStringLiteral("gravity-dive");
+        else if (entryBody && exitRoof)
+            pattern = QStringLiteral("gravity-climb");
+        else
+            ambiguous = true;
+        evidence.insert(QStringLiteral("roofBodyTransition"), !pattern.isEmpty());
+        evidence.insert(QStringLiteral("entryPixel"), QJsonArray{entry.x(), entry.y()});
+        evidence.insert(QStringLiteral("exitPixel"), QJsonArray{exit.x(), exit.y()});
+        if (!pattern.isEmpty() && metrics.levels > 1) {
+            const double bodyY = pattern == QStringLiteral("gravity-dive") ? exit.y() : entry.y();
+            const double frontTop = box.top() + box.width() * .22;
+            const double rowHeight = (box.bottom() - frontTop) / metrics.levels;
+            cubeBodyLevel = metrics.levels - 1 -
+                            std::clamp(int((bodyY - frontTop) / rowHeight), 0, metrics.levels - 1);
+            evidence.insert(QStringLiteral("observedBodyLevel"), cubeBodyLevel);
+        }
+        // The broad visible face is assigned toward the departure/approach.
+        // Cube symmetry permits that assignment without changing its dimensions.
+        if (!pattern.isEmpty()) {
+            const int at = pattern == QStringLiteral("gravity-dive") ? lastInside : firstInside;
+            const int before = std::max(0, at - int(cell * .45)),
+                      after = std::min(int(trace.points.size()) - 1, at + int(cell * .45));
+            auto d = trace.points[after] - trace.points[before];
+            if (pattern == QStringLiteral("gravity-dive"))
+                d = -d;
+            if (std::hypot(d.x(), d.y()) > 1)
+                gate.yaw = qRadiansToDegrees(std::atan2(d.x(), d.y()));
+        }
+    } else if (metrics.levels == 2 && visits.size() == 2 && visits[0].level != visits[1].level) {
+        pattern =
+            visits[0].level == 0 ? QStringLiteral("lower-upper") : QStringLiteral("upper-lower");
+    } else if (metrics.columns > 1 && visits.size() == metrics.columns) {
+        bool ascending = true, descending = true;
+        for (int i = 0; i < visits.size(); ++i) {
+            ascending &= visits[i].column == i;
+            descending &= visits[i].column == metrics.columns - 1 - i;
+        }
+        if (ascending)
+            pattern = QStringLiteral("left-right");
+        else if (descending)
+            pattern = QStringLiteral("right-left");
+    } else if (metrics.columns == 1 && metrics.levels == 1 && !cube) {
+        pattern = QStringLiteral("single");
+    }
+    QVector<RouteStep> steps;
+    if (!pattern.isEmpty())
+        steps = gateManeuverSteps(gate, pattern);
+    if (cube && cubeBodyLevel > 0 && !steps.isEmpty()) {
+        QVector<RouteStep> visible;
+        for (auto step : steps) {
+            if (step.face == QStringLiteral("front"))
+                step.level = cubeBodyLevel;
+            else if (step.level < cubeBodyLevel)
+                continue;
+            visible.push_back(step);
+        }
+        steps = visible;
+        ambiguous = true;
+    }
+    if (steps.isEmpty()) {
+        // Partial evidence produces only the actually observed windows. Missing
+        // cells are flagged for correction, rather than filled by a type preset.
+        ambiguous = true;
+        if (visits.isEmpty())
+            visits.push_back({0, 0, std::max(0, firstInside), std::max(0, lastInside)});
+        for (int i = 0; i < visits.size(); ++i) {
+            RouteStep step;
+            step.id = newGateId();
+            step.gateId = gate.id;
+            step.column = visits[i].column;
+            step.level = visits[i].level;
+            step.face = i % 2 ? QStringLiteral("back") : QStringLiteral("front");
+            steps.push_back(step);
+            if (i + 1 < visits.size()) {
+                RouteStep guide;
+                guide.id = newGateId();
+                guide.gateId = gate.id;
+                guide.kind = QStringLiteral("guide");
+                guide.localGuide = QVector3D(
+                    float((visits[i].column + visits[i + 1].column + 1.0 - metrics.columns) /
+                          metrics.columns),
+                    float((visits[i].level + visits[i + 1].level + 1.0 - metrics.levels) /
+                          metrics.levels),
+                    i % 2 ? -.8f : .8f);
+                steps.push_back(guide);
+            }
+        }
+    }
+    // Printed symbol elevation is not a metric depth measurement. Preserve its
+    // observed ordering, while making the nominal 3D turn depth explicitly editable.
+    const bool estimatedDepth = metrics.columns > 1 || metrics.levels > 1 || cube;
+    bool reverseInitial = false;
+    if (!cube && !visits.isEmpty() && !trace.points.isEmpty()) {
+        const auto &first = visits.front();
+        const int at = first.first, before = std::max(0, at - int(cell * .30)),
+                  after = std::min(int(trace.points.size()) - 1, at + int(cell * .30));
+        const auto d = trace.points[after] - trace.points[before];
+        const double signedDirection = node.edgeOn ? d.x() * std::sin(yaw) : d.y() * std::cos(yaw);
+        reverseInitial = signedDirection < 0;
+        if (std::abs(signedDirection) < 1)
+            ambiguous = true;
+    }
+    for (auto &step : steps) {
+        if (reverseInitial) {
+            if (step.kind == QStringLiteral("pass"))
+                step.reverse = !step.reverse;
+            else
+                step.localGuide.setZ(-step.localGuide.z());
+        }
+        step.extra.insert(
+            QStringLiteral("recognition"),
+            QJsonObject{{QStringLiteral("source"), QStringLiteral("printed-line-trace")},
+                        {QStringLiteral("confidence"), ambiguous ? .45 : .78},
+                        {QStringLiteral("requiresReview"), true},
+                        {QStringLiteral("ambiguous"), ambiguous},
+                        {QStringLiteral("guideDepthEstimated"), estimatedDepth}});
+    }
+    evidence.insert(QStringLiteral("maneuverPattern"), pattern);
+    evidence.insert(QStringLiteral("passageAmbiguous"), ambiguous);
+    evidence.insert(QStringLiteral("guideDepthEstimated"), estimatedDepth);
+    evidence.insert(QStringLiteral("compoundPassesNeedReview"), estimatedDepth);
+    gate.extra.insert(QStringLiteral("recognition"), evidence);
+    *uncertain += ambiguous;
+    return steps;
+}
+
 // Dark schematic symbols need a different detector from blue editor icons.
 // The coloured racing line establishes context and graph connectivity; it is
 // never replaced with a shortest tour through arbitrary coloured fragments.
@@ -304,9 +773,11 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     const int margin = std::max(10, int(std::round(30 * resolution)));
     const QRect field =
         course.adjusted(-margin, -margin, margin, margin).intersected(QRect(0, 0, width, height));
-    for (int y = field.top(); y <= field.bottom(); ++y) {
+    // Label whole ink objects before applying the route context. Clipping the
+    // mask to the course ROI would truncate a launch pad extending beyond it.
+    for (int y = 0; y < height; ++y) {
         const auto *line = reinterpret_cast<const QRgb *>(working.constScanLine(y));
-        for (int x = field.left(); x <= field.right(); ++x) {
+        for (int x = 0; x < width; ++x) {
             const int r = qRed(line[x]), g = qGreen(line[x]), b = qBlue(line[x]);
             const int maximum = std::max({r, g, b}), minimum = std::min({r, g, b});
             dark[size_t(y * width + x)] =
@@ -327,6 +798,8 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     std::vector<double> cellSizes;
     for (const auto &object : objects) {
         const auto &s = object.shape;
+        if (!field.contains(boxCenter(s).toPoint()))
+            continue;
         const int major = std::max(s.width(), s.height()), minor = std::min(s.width(), s.height());
         if (major < 18 * resolution || major > std::min(width, height) * .45)
             continue;
@@ -525,6 +998,24 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         if (!visited[size_t(i)])
             order.push_back(i);
     document.closedLoop = cycle;
+    if (startKnown) {
+        document.takeoff.enabled = true;
+        document.takeoff.position =
+            document.backgroundOrigin +
+            QPointF(startReference.x() * sx, startReference.y() * sy) * document.metersPerPixel;
+        document.takeoff.elevation = 0;
+        const auto direction = boxCenter(nodes[size_t(start)].shape) - startReference;
+        document.takeoff.yaw = qRadiansToDegrees(std::atan2(direction.x(), direction.y()));
+        document.takeoff.extra.insert(
+            QStringLiteral("recognition"),
+            QJsonObject{{QStringLiteral("source"), QStringLiteral("filled-launch-platform")},
+                        {QStringLiteral("requiresReview"), true}});
+    }
+    const auto trace = tracePrintedLine(route, width, height, field, nodes, cellPixels,
+                                        startReference, boxCenter(nodes[size_t(start)].shape));
+    document.routeSteps.clear();
+    document.routeStepsDefined = true;
+    int ambiguousPassages = 0;
     int compounds = 0;
     for (int i = 0; i < count; ++i) {
         const auto &node = nodes[size_t(order[size_t(i)])];
@@ -554,6 +1045,8 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
                          QJsonArray{node.shape.left * sx, node.shape.top * sy,
                                     node.shape.width() * sx, node.shape.height() * sy}}});
         compounds += node.type != QStringLiteral("standard");
+        document.routeSteps +=
+            traceComponentPasses(gate, node, trace, cellPixels, &ambiguousPassages);
         document.gates.push_back(gate);
     }
     result.detectedCount = count;
@@ -563,6 +1056,10 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
                     {QStringLiteral("orderHeuristic"), QStringLiteral("drawn-route-connectivity")},
                     {QStringLiteral("startDetectedFromPlatform"), startKnown},
                     {QStringLiteral("routeGraphConnected"), connected},
+                    {QStringLiteral("routeTraceCoverage"), trace.coverage},
+                    {QStringLiteral("routeTracePoints"), trace.points.size()},
+                    {QStringLiteral("routeOcclusionBridges"), trace.occlusions},
+                    {QStringLiteral("ambiguousPassageGroups"), ambiguousPassages},
                     {QStringLiteral("requiresReview"), true},
                     {QStringLiteral("detectedCount"), count}});
     result.warnings
@@ -578,8 +1075,13 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         result.warnings << QStringLiteral(
             "部分路线连接或交叉关系不明确，未使用最短巡回代替原路线，请检查通过顺序。");
     if (compounds)
-        result.warnings << QStringLiteral("复合门保留为组合组件；内部重复过门、左右单元、上下层与准"
-                                          "确高度仍需校对，实体障碍数不等于检查点通过次数。");
+        result.warnings << QStringLiteral(
+            "已沿原始洋红线保留复合门的单元/层级通过顺序和重复过门；遮挡续接"
+            "及三维转弯深度为估算，实体障碍数不等于通过次数。");
+    if (ambiguousPassages || trace.ambiguous)
+        result.warnings << QStringLiteral("有 %1 组内部路径证据不足或存在投影歧义，已标记为待校对；"
+                                          "未按组件类型补齐看不见的单元，请在路线面板修正。")
+                               .arg(ambiguousPassages);
     result.warnings << QStringLiteral(
         "细长闭合符号按侧视门识别；位置、通过方向和高度为草稿，需在模拟器中验收。");
     return attempt;
@@ -607,7 +1109,7 @@ RecognitionResult recognizeTrack(const QImage &input, const RecognitionOptions &
     }
 
     document.background = input;
-    document.showBackground = true;
+    document.showBackground = false;
     document.backgroundOpacity = 0.35;
     QImage working = input;
     if (std::max(input.width(), input.height()) > MaxWorkingDimension)

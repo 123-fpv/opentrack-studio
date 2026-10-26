@@ -24,22 +24,48 @@ struct Gate {
     QJsonObject extra;
 };
 
+struct RouteStep {
+    QString id;
+    QString gateId; // Physical component reference; repeated passes share this ID.
+    QString kind = QStringLiteral("pass");  // "pass" or "guide" (never a checkpoint).
+    QString face = QStringLiteral("front"); // front/back/left/right/top/bottom, in gate-local axes.
+    int column = 0, level = 0;              // Zero-based cell, independent for every pass.
+    bool reverse = false; // Reverse traversal, without rotating the physical gate.
+    // Anchored guides use normalized group half-centreline extents (X/Y/Z).
+    // With no gateId, this is instead an absolute world point in metres.
+    QVector3D localGuide;
+    QString label;
+    QJsonObject extra;
+};
+
+struct TakeoffPoint {
+    bool enabled = false;
+    QPointF position; // Ground X/Z; the editor displays X/Y.
+    double elevation = 0, yaw = 0;
+    QJsonObject extra;
+};
+
 struct TrackDocument {
     QString name = QStringLiteral("未命名赛道");
     QString scenery = QStringLiteral("Football Stadium");
     QVector<Gate> gates;
+    QVector<RouteStep> routeSteps;
+    // An explicitly empty route must not fall back to physical gate order.
+    bool routeStepsDefined = false;
+    TakeoffPoint takeoff; // Independent of route steps, gate order and finish/landing behavior.
     QImage background;
     double metersPerPixel = 0.05;
     QPointF backgroundOrigin = QPointF(-30.0, -20.0);
     double backgroundOpacity = 0.35;
-    bool showBackground = true;
+    bool showBackground = false;
     double gridSize = 1.0;
     bool closedLoop = true;
     QJsonObject extra;
 };
 
 // OpenTrackStudio .otproj v1: UTF-8 JSON with metres, centre altitude and yaw in degrees,
-// gates in traversal order, an optional embedded PNG and extensible extra objects.
+// physical gates, optional ordered routeSteps/takeoff, an embedded PNG and extra objects.
+// Missing routeSteps preserves the legacy gate-order route. No landing is implied.
 QJsonObject toJson(const TrackDocument &document);
 bool fromJson(const QJsonObject &object, TrackDocument *document, QString *error = nullptr);
 bool saveProject(const QString &path, const TrackDocument &document, QString *error = nullptr);
@@ -91,6 +117,27 @@ Gate makeGate(const QString &type = QStringLiteral("standard"), double width = -
 // wall at local Z=-width/2. Position and altitude describe the WHOLE group centre.
 QPointF gatePassagePosition(const Gate &gate);
 double gatePassageElevation(const Gate &gate);
+
+struct RouteStepGeometry {
+    bool valid = false;
+    QVector3D position, normal, right, up; // World coordinates; right x up = traversal normal.
+    double openingWidth = 0, openingHeight = 0;
+};
+
+// Front/back are available on planar frames. Cubes also expose left/right/top/bottom
+// of the selected cell. Default face normals point into that cell; reverse flips
+// normal/right. Guide positions follow their anchor's movement, yaw and dimensions.
+RouteStepGeometry routeStepGeometry(const TrackDocument &document, const RouteStep &step);
+QVector3D routeStepPosition(const TrackDocument &document, const RouteStep &step);
+QVector3D routeStepNormal(const TrackDocument &document, const RouteStep &step);
+QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document);
+// Explicit user-selected correction patterns; this does not infer a maneuver from a symbol.
+// Unsupported shape/pattern combinations return an empty vector.
+QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern);
+// Explicit routes retain every guide and portal centre, with short normal-aligned
+// approach/exit segments. They use no global spline that can skip a face crossing.
+// The independent takeoff point is not a lap checkpoint or an implicit route step.
+QVector<QVector3D> routePolyline(const TrackDocument &document);
 double routeLength(const TrackDocument &document);
 QPainterPath routePath(const TrackDocument &document);
 

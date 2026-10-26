@@ -13,6 +13,7 @@ class QCheckBox;
 class QPushButton;
 class QStackedWidget;
 class QTimer;
+class QTabWidget;
 namespace ot {
 class Scene3D;
 class StudioWindow : public QMainWindow {
@@ -46,6 +47,13 @@ class StudioWindow : public QMainWindow {
     QLabel *gateCount_ = nullptr, *length_ = nullptr, *zoom_ = nullptr, *selectionTitle_ = nullptr,
            *imageStatus_ = nullptr, *notice_ = nullptr;
     QListWidget *order_ = nullptr;
+    QListWidget *routeOrder_ = nullptr;
+    QTabWidget *sequenceTabs_ = nullptr;
+    QWidget *stepPanel_ = nullptr;
+    QComboBox *stepFace_ = nullptr, *stepReverse_ = nullptr, *maneuver_ = nullptr;
+    QLabel *stepSummary_ = nullptr, *takeoffStatus_ = nullptr;
+    QDoubleSpinBox *takeoffX_ = nullptr, *takeoffY_ = nullptr, *takeoffZ_ = nullptr,
+                   *takeoffYaw_ = nullptr;
     QDoubleSpinBox *x_ = nullptr, *z_ = nullptr, *alt_ = nullptr, *yaw_ = nullptr,
                    *width_ = nullptr, *height_ = nullptr, *scale_ = nullptr;
     QSlider *opacity_ = nullptr;
@@ -55,8 +63,9 @@ class StudioWindow : public QMainWindow {
     QTimer *recognitionTimer_ = nullptr;
     qint64 recognitionStartedMs_ = 0;
     quint64 recognitionSerial_ = 0;
-    QString path_, selected_;
+    QString path_, selected_, selectedRouteStep_;
     bool updating_ = false, recognizing_ = false;
+    bool selectingRoute_ = false;
     quint64 revision_ = 0;
     void setupUi();
     void setupShortcuts();
@@ -74,6 +83,15 @@ class StudioWindow : public QMainWindow {
     void deleteGate();
     void rotateGate(double delta);
     void moveOrder(int delta);
+    void rebuildRouteList();
+    void updateRouteSelection(const QString &id);
+    void editRouteSelection();
+    void addRoutePass();
+    void duplicateRoutePass();
+    void deleteRoutePass();
+    void moveRoutePass(int delta);
+    void applyManeuver();
+    void editTakeoff();
     void importImage();
     void importImagePath(const QString &path);
     void importPhotosWithAi(const QStringList &paths = {});

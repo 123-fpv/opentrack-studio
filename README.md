@@ -2,7 +2,7 @@
 
 <img src="assets/app-icon.svg" width="72" alt="OpenTrack Studio 应用图标">
 
-用图片搭建 FPV 赛道的 C++ 桌面编辑器。**0.1.3 预览版**可在本地解析深蓝轮廓、洋红路线的俯视设计图，识别组合门并参考绘制的路线排列顺序；也保留简单蓝色门架图识别。在默认的 3D 场景中校对位置、高度和通过顺序，再导出供 VelociDrone 导入的 `.trk` 文件。
+用图片搭建 FPV 赛道的 C++ 桌面编辑器。**0.1.4 预览版**将实体障碍与有序过门步骤分开：同一座日字门可以先下后上，同一个立方门可以从前面进入、从顶部穿出，不必复制实体。导入俯视图生成草稿，在 3D 中校对窗口、方向和顺序，再导出供 VelociDrone 导入的 `.trk` 文件。
 
 **无需应用账号登录，工程保存在本机。** 平面图识别完全在本地运行；可选的实拍 AI 功能仅在点击“生成草稿”后，将选定照片发送到 DeepSeek 官方 API。界面、图标、示例赛道和实现代码独立编写，源码采用 MIT 许可证。
 
@@ -10,25 +10,29 @@
 
 ## 当前功能
 
-- 黑白高对比界面，内置操作说明；默认打开可编辑的 3D 场景，可旋转视角、平移、缩放，也可切换到俯视图。
+- 黑白高对比界面，默认 3D 场景使用浅灰实体地面；来源图片只作为可选的 2D 参考，不铺在 3D 地面上。
 - 把单张 PNG / JPG / BMP 拖到左侧小框、3D 场景或俯视图，自动在本地生成草稿；一次撤销恢复导入前的整个工程。
-- 深蓝轮廓配洋红路线的设计图支持标准门、双联门、三联门、叠门、立方门和双层立方门，识别时尝试排除图例和起飞台等干扰。
+- 深蓝轮廓配洋红路线的设计图支持标准门、双联门、三联门、叠门、立方门和双层立方门；图例不计作障碍，可辨认的起飞平台单独处理。
 - 可选实拍/航拍 AI 草稿：最多选择 8 张照片，补充已知门宽及起点、方向、门序说明，预览确认后再应用。
 - 在场景中摆放、选择、拖动、旋转门架，调整尺寸和中心高度。
 - 地面使用 X / Y 坐标，Z 向上。标准门及组合门每格横、竖中心距 3 m，杆长 3.2 m、截面 0.1 × 0.1 m；转向柱默认同截面、长 3.2 m。
-- 组合门可选择通过的列、层；组件可独立选颜色，黑白界面保持简洁。
+- “实体组件”与“过门步骤”两个列表：实体标为 G1、G2，过门次数单独编号；重复穿门只增加步骤。
+- 每次穿越可单独选择列、层、前后或立方体各面及反转方向；提供日字门上下绕行、联门交替穿越、重力门俯冲/爬升的手动动作。
+- 独立设置起飞架的位置、基点高度和朝向，起飞点不占过门编号，默认不创建降落点。
 - 选中门架后显示属性；比例和底图高级设置默认收起。
-- 按通过顺序查看门架，显示平滑路线和几何路径长度。
+- 3D 显示实际穿越窗口、编号、方向箭头和绕行引导点；显式路线保留每次面交叉及引导点，长度包含垂直行程。
 - 将完整工程保存为 `.otproj`，底图随工程嵌入。
 - 导入、导出 VelociDrone `.trk`；新建方梁标准门、起终点门、转向柱及上述组合门均支持导出。
 
 本地识别面向清晰、平整且符合上述样式的设计图；简单蓝色图使用基础检测，不能保证还原复杂组合及门序。照片、透视图、其他配色或完整软件截图可能漏检、误检；建议先裁出赛道区域。真实高度、通过方向、交叉及重复穿门仍需校对。连续导入时以最后一次为准，识别期间的工程编辑不会被旧结果覆盖。第一次使用可先看 [快速上手](docs/quickstart.md)，更多设置见 [使用说明](docs/usage.md)。
 
+识别会沿图中路线和箭头推断窗口访问顺序，不因门型相同就补齐所有隐藏窗口；深度和穿越面的解释仍需复核。手动“应用动作”会替换该实体已有的过门动作，可撤销。新增或复制实体会带一个默认穿越，之后可用“＋ 穿越”补充重复通过的步骤。
+
 实拍 AI 功能使用固定官方端点 `https://api.deepseek.com` 和 `deepseek-flash` 模型，需要用户自己的 API 密钥；可选择保存到 Windows 凭据管理器。拖入多张照片会打开 AI 窗口，只有明确点击生成才发送缩放后的照片，生成后先预览，再决定是否应用。默认勾选“快速生成”，复杂组合可取消后重试；两种模式都可能漏识或返回无效结果，没有固定耗时保证。结果需人工校对，不属于测绘或摄影测量重建。
 
 ## VelociDrone 兼容状态
 
-项目包含独立实现的原生 `.trk` 读写。**尚未完成安装版 VelociDrone 的实际导入和飞行验收。** 文件级往返测试不能替代模拟器验收；原生门架的尺寸换算也仍需实机校准。
+项目包含独立实现的原生 `.trk` 读写。**本程序 C++ 导出的测试赛道已通过安装版 VelociDrone 导入和场景载入，完整试飞尚未完成。** 独立兼容性测试文件也已被接受；F9 试飞因遥控器未配置而中止，窗口触发、碰撞和起飞位仍需飞行验收。
 
 测试范围和官方 AI 接口实测记录见 [验证记录](docs/validation.md)。
 
@@ -64,8 +68,8 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## English
 
-OpenTrack Studio 0.1.3 is a C++/Qt desktop editor for FPV race layouts. Drop one overhead plan onto the import box, 3D scene or overhead view to generate a local draft. Dark outlined obstacles with a magenta route support compound gates; simpler blue-symbol plans use a basic detector. One Undo restores the pre-import project. Review positions, headings, heights and order in the editable 3D view before exporting a native VelociDrone `.trk`. The editor displays X/Y ground coordinates and Z height. No application login is required.
+OpenTrack Studio 0.1.4 is a C++/Qt desktop editor for FPV race layouts. Physical obstacles and ordered flight steps are separate: repeat a pass, select another cell or cross another cube face without duplicating the structure. Drop an overhead plan to generate a local draft; one Undo restores the pre-import project. Review every crossing and direction in the 3D view before exporting a native VelociDrone `.trk`. The editor uses X/Y ground coordinates, Z height and a solid gray ground plane. Source images remain optional 2D references. No application login is required.
 
 Dropping multiple photographs opens the optional AI workflow, accepting up to 8 images. Images are sent to the official DeepSeek API only after an explicit Generate action; preview the draft before applying it. Fast generation is enabled by default, but neither mode guarantees accuracy or response time. Local diagram recognition remains offline.
 
-New stock-beam exports support standard/start gates, turning pillars and double, triple, ladder, cube and stacked-cube assemblies. Each frame cell uses 3 m centreline spacing and 3.2 m beams with a 0.1 m square section. Select the passage column/level for compound gates. Actual loading and flying in the installed simulator remain unverified. See the [usage guide](docs/usage.md), [format notes](docs/format.md), [validation record](docs/validation.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Application source is MIT licensed; Qt is dynamically linked under its applicable open-source licenses.
+Stock-beam exports support standard/start gates, turning pillars and double, triple, ladder, cube and stacked-cube assemblies. Frame cells use 3 m centreline spacing and 3.2 m beams with a 0.1 m square section. Set the independent takeoff grid before exporting; it is not the first checkpoint, and no landing point is created by default. Manual maneuver templates help correct uncertain routes; guides do not become native checkpoints. Independent interoperability fixtures passed import and scene loading in the installed simulator; flight acceptance remains pending because the controller is not configured. See the [usage guide](docs/usage.md), [format notes](docs/format.md), [validation record](docs/validation.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Application source is MIT licensed; Qt is dynamically linked under its applicable open-source licenses.

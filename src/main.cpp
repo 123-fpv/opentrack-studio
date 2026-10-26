@@ -33,7 +33,7 @@ void applyWindowCaption(QWidget &window) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("OpenTrack Studio");
-    app.setApplicationVersion("0.1.3");
+    app.setApplicationVersion("0.1.4");
     app.setOrganizationName("OpenTrackStudio");
     app.setStyle(QStyleFactory::create("Fusion"));
     app.setFont(QFont("Microsoft YaHei UI", 9));
@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
     } else if (args.size() >= 3 && args[1] == "--render-demo") {
         if (args.size() >= 4 && !window.openPath(args[3]))
             return 1;
-        if (auto *order = window.findChild<QListWidget *>("orderList"))
+        if (auto *order = window.findChild<QListWidget *>("routeOrderList"))
             order->setCurrentRow(0);
         QTimer::singleShot(800, &window, [&] {
             result = window.screen()->grabWindow(window.winId()).save(args[2]) ? 0 : 1;

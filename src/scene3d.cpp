@@ -3,6 +3,7 @@
 
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QHash>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMatrix4x4>
@@ -10,7 +11,6 @@
 #include <QOpenGLBuffer>
 #include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
-#include <QOpenGLTexture>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -48,9 +48,6 @@ constexpr float FieldOfView = 42.0f;
 struct Vertex {
     float x, y, z, r, g, b;
 };
-struct TextureVertex {
-    float x, y, z, u, v;
-};
 struct Batch {
     std::vector<Vertex> vertices;
     QOpenGLBuffer buffer{QOpenGLBuffer::VertexBuffer};
@@ -61,12 +58,6 @@ struct Batch {
 QVector3D point3(const Gate &gate) {
     return {static_cast<float>(gate.position.x()), static_cast<float>(gate.elevation),
             static_cast<float>(gate.position.y())};
-}
-
-QVector3D passage3(const Gate &gate) {
-    const QPointF passage = gatePassagePosition(gate);
-    return {static_cast<float>(passage.x()), static_cast<float>(gatePassageElevation(gate)),
-            static_cast<float>(passage.y())};
 }
 
 float selectionHaloRadius(const Gate &gate) {
@@ -251,10 +242,10 @@ struct Scene3D::Impl {
     }
     Scene3D *q;
     TrackDocument *document = nullptr;
-    QString selected, placement;
+    QString selected, selectedStep, placement;
     double placeWidth = 2.4, placeHeight = 2.4;
     bool snap = true, routeVisible = true, space = false, firstFit = true;
-    bool glReady = false, dirty = true, textureDirty = true, ghostDirty = true, haveGhost = false;
+    bool glReady = false, dirty = true, ghostDirty = true, haveGhost = false;
     bool offscreen = QGuiApplication::platformName() == QStringLiteral("offscreen") ||
                      QGuiApplication::platformName() == QStringLiteral("minimal");
     QString glError;
@@ -279,16 +270,23 @@ struct Scene3D::Impl {
         ghostBatch;
     std::array<Batch *, 11> batches{{&ground, &shadows, &grid, &solids, &routeTube, &routeLine,
                                      &projection, &selection, &halo, &preview, &ghostBatch}};
-    std::unique_ptr<QOpenGLShaderProgram> program, textureProgram;
-    std::unique_ptr<QOpenGLTexture> texture;
-    QOpenGLBuffer textureBuffer{QOpenGLBuffer::VertexBuffer};
-    qint64 backgroundCacheKey = 0;
+    std::unique_ptr<QOpenGLShaderProgram> program;
     FallbackCanvas *fallback = nullptr;
     QTimer timer;
     QElapsedTimer elapsed;
     double speedKph = 70, travel = 0;
     std::vector<QVector3D> route;
     std::vector<double> routeLengths;
+    struct RouteVisual {
+        RouteStep step;
+        RouteStepGeometry geometry;
+        int number = 0, gateNumber = 0, visit = 0, overlap = 0;
+    };
+    std::vector<RouteVisual> routeVisuals;
+    mutable QHash<QString, QRectF> routeBadgeCache;
+    mutable QMatrix4x4 routeBadgeMatrix;
+    mutable QSize routeBadgeSize;
+    mutable bool routeBadgesReady = false;
 
     const Gate *gate(const QString &id) const {
         if (document)
@@ -356,6 +354,73 @@ struct Scene3D::Impl {
             point = {std::round(point.x() / step) * step, std::round(point.y() / step) * step};
         }
         return point;
+    }
+
+    void layoutRouteBadges() const {
+        if (routeBadgesReady && routeBadgeMatrix == viewProjection && routeBadgeSize == q->size())
+            return;
+        routeBadgeCache.clear();
+        routeBadgeMatrix = viewProjection;
+        routeBadgeSize = q->size();
+        routeBadgesReady = true;
+        const QRectF available(q->rect().adjusted(12, 58, -12, -55));
+        QVector<QRectF> occupied;
+        if (const auto *active = gate(selected)) {
+            QPointF point;
+            if (project(point3(*active) +
+                            QVector3D(0,
+                                      static_cast<float>(gateFrameMetrics(*active).outerHeight / 2),
+                                      0),
+                        &point))
+                occupied.append(QRectF(point.x() - 22, point.y() - 25, 44, 22));
+        }
+        for (const auto &visual : routeVisuals) {
+            QPointF point;
+            if (visual.step.kind != QStringLiteral("pass") ||
+                !project(visual.geometry.position, &point) || !available.contains(point))
+                continue;
+            const QPointF preferred = point + QPointF(15, -17);
+            const qreal width = visual.number >= 100 ? 30 : 23;
+            QRectF chosen;
+            for (int ring = 0; ring <= 10 && chosen.isEmpty(); ++ring) {
+                const int candidates = ring == 0 ? 1 : 16;
+                for (int candidate = 0; candidate < candidates; ++candidate) {
+                    const double angle = candidate * Pi / 8 - Pi / 2;
+                    const QPointF offset =
+                        ring == 0 ? QPointF()
+                                  : QPointF(std::cos(angle), std::sin(angle)) * (ring * 25.0);
+                    const QPointF center = preferred + offset;
+                    const QRectF badge(center.x() - width / 2, center.y() - 11.5, width, 23);
+                    if (!available.contains(badge))
+                        continue;
+                    const auto padded = badge.adjusted(-3, -3, 3, 3);
+                    const bool overlaps = std::any_of(
+                        occupied.begin(), occupied.end(),
+                        [&padded](const QRectF &other) { return padded.intersects(other); });
+                    if (!overlaps) {
+                        chosen = badge;
+                        break;
+                    }
+                }
+            }
+            if (!chosen.isEmpty()) {
+                occupied.append(chosen);
+                routeBadgeCache.insert(visual.step.id, chosen);
+            }
+        }
+    }
+
+    QRectF routeBadge(const RouteVisual &visual) const {
+        layoutRouteBadges();
+        return routeBadgeCache.value(visual.step.id);
+    }
+
+    QString pickRoute(const QPointF &position) const {
+        if (routeVisible && routeVisuals.size() < 400)
+            for (const auto &visual : routeVisuals)
+                if (routeBadge(visual).contains(position))
+                    return visual.step.id;
+        return {};
     }
 
     QString pick(const QPointF &position) {
@@ -436,10 +501,11 @@ struct Scene3D::Impl {
                 std::max(projectedBounds.width(), projectedBounds.height());
             const double threshold = std::clamp(projectedSpan * .15, 6.0, 14.0);
             QPointF label;
-            const bool hasLabel = project(point3(item) + QVector3D(0, h, 0), &label);
+            const bool hasLabel = (!routeVisible || item.id == selected) &&
+                                  project(point3(item) + QVector3D(0, h, 0), &label);
             label.ry() -= 14;
             const bool labelHit =
-                hasLabel && std::hypot(position.x() - label.x(), position.y() - label.y()) < 11;
+                hasLabel && std::hypot(position.x() - label.x(), position.y() - label.y()) < 17;
             if (!inside && hitDistance > threshold && !labelHit)
                 continue;
             // Prefer the nearest surface when projected openings overlap.
@@ -457,6 +523,35 @@ struct Scene3D::Impl {
             batch->vertices.clear();
         route.clear();
         routeLengths.clear();
+        routeVisuals.clear();
+        routeBadgesReady = false;
+        if (document) {
+            const auto points = routePolyline(*document);
+            route.assign(points.begin(), points.end());
+            QHash<QString, int> gateNumbers, visits, overlaps;
+            for (qsizetype i = 0; i < document->gates.size(); ++i)
+                gateNumbers.insert(document->gates[i].id, static_cast<int>(i + 1));
+            int number = 0;
+            for (const auto &step : effectiveRouteSteps(*document)) {
+                const auto geometry = routeStepGeometry(*document, step);
+                if (!geometry.valid)
+                    continue;
+                RouteVisual visual;
+                visual.step = step;
+                visual.geometry = geometry;
+                visual.gateNumber = gateNumbers.value(step.gateId);
+                if (step.kind == QStringLiteral("pass")) {
+                    visual.number = ++number;
+                    visual.visit = ++visits[step.gateId];
+                    const auto &p = geometry.position;
+                    const QString key = QString::number(p.x(), 'f', 3) + '/' +
+                                        QString::number(p.y(), 'f', 3) + '/' +
+                                        QString::number(p.z(), 'f', 3);
+                    visual.overlap = overlaps[key]++;
+                }
+                routeVisuals.push_back(visual);
+            }
+        }
         QRectF bounds;
         bool hasBounds = false;
         if (document) {
@@ -473,12 +568,14 @@ struct Scene3D::Impl {
                     bounds = bounds.united(QRectF(passage - QPointF(1.5, 1.5), QSizeF(3, 3)));
                 }
             }
-            if (!document->background.isNull() && document->showBackground) {
-                const QRectF image(
-                    document->backgroundOrigin,
-                    QSizeF(document->background.width() * document->metersPerPixel,
-                           document->background.height() * document->metersPerPixel));
-                bounds = hasBounds ? bounds.united(image) : image;
+            for (const auto &point : route) {
+                const QRectF one(point.x() - .75, point.z() - .75, 1.5, 1.5);
+                bounds = hasBounds ? bounds.united(one) : one;
+                hasBounds = true;
+            }
+            if (document->takeoff.enabled) {
+                const QRectF one(document->takeoff.position - QPointF(1, 1), QSizeF(2, 2));
+                bounds = hasBounds ? bounds.united(one) : one;
                 hasBounds = true;
             }
         }
@@ -493,21 +590,6 @@ struct Scene3D::Impl {
                     z1 = static_cast<float>(groundBounds.bottom());
         quad(ground, {x0, -.045f, z0}, {x1, -.045f, z0}, {x1, -.045f, z1}, {x0, -.045f, z1},
              QColor("#ededed"));
-        double step = document ? std::max(.05, document->gridSize) : 1;
-        while (groundBounds.width() / step + groundBounds.height() / step > 600)
-            step *= 2;
-        const double beginX = std::ceil(groundBounds.left() / step) * step;
-        const double beginZ = std::ceil(groundBounds.top() / step) * step;
-        for (double x = beginX; x <= groundBounds.right(); x += step) {
-            const bool major = std::abs(std::remainder(x / step, 5.0)) < .001;
-            line(grid, {static_cast<float>(x), .005f, z0}, {static_cast<float>(x), .005f, z1},
-                 major ? QColor("#c9c9c9") : QColor("#dedede"));
-        }
-        for (double z = beginZ; z <= groundBounds.bottom(); z += step) {
-            const bool major = std::abs(std::remainder(z / step, 5.0)) < .001;
-            line(grid, {x0, .005f, static_cast<float>(z)}, {x1, .005f, static_cast<float>(z)},
-                 major ? QColor("#c9c9c9") : QColor("#dedede"));
-        }
         const QColor border("#bcbcbc");
         line(grid, {x0, .01f, z0}, {x1, .01f, z0}, border);
         line(grid, {x1, .01f, z0}, {x1, .01f, z1}, border);
@@ -538,9 +620,10 @@ struct Scene3D::Impl {
                                           static_cast<float>(passage.y()));
                 const QColor arrowColor =
                     item.id == selected ? QColor("#222222") : QColor("#969696");
-                triangle(solids, arrowBase + direction * 1.15f,
-                         arrowBase + direction * .65f + side * .19f,
-                         arrowBase + direction * .65f - side * .19f, arrowColor);
+                if (!document->routeStepsDefined && document->routeSteps.isEmpty())
+                    triangle(solids, arrowBase + direction * 1.15f,
+                             arrowBase + direction * .65f + side * .19f,
+                             arrowBase + direction * .65f - side * .19f, arrowColor);
                 if (item.id == selected) {
                     const auto metrics = gateFrameMetrics(item);
                     const float halfW = static_cast<float>(metrics.outerWidth / 2 + .15);
@@ -586,32 +669,7 @@ struct Scene3D::Impl {
                     }
                 }
             }
-            const qsizetype count = document->gates.size();
-            if (count > 1) {
-                const qsizetype segments = document->closedLoop ? count : count - 1;
-                const int samples =
-                    std::clamp(12000 / static_cast<int>(std::max(qsizetype(1), segments)), 3, 28);
-                const auto at = [this, count](qsizetype index) {
-                    if (document->closedLoop)
-                        index = (index % count + count) % count;
-                    else
-                        index = std::clamp(index, qsizetype(0), count - 1);
-                    return passage3(document->gates[index]);
-                };
-                for (qsizetype segment = 0; segment < segments; ++segment) {
-                    const auto p0 = at(segment - 1), p1 = at(segment), p2 = at(segment + 1),
-                               p3 = at(segment + 2);
-                    for (int j = 0; j < samples; ++j) {
-                        const float t = static_cast<float>(j) / static_cast<float>(samples);
-                        const float t2 = t * t, t3 = t2 * t;
-                        const QVector3D point =
-                            ((p1 * 2) + (p2 - p0) * t + (p0 * 2 - p1 * 5 + p2 * 4 - p3) * t2 +
-                             (-p0 + p1 * 3 - p2 * 3 + p3) * t3) *
-                            .5f;
-                        route.push_back(point);
-                    }
-                }
-                route.push_back(at(segments));
+            if (route.size() > 1) {
                 double length = 0;
                 routeLengths.push_back(0);
                 for (size_t i = 1; i < route.size(); ++i) {
@@ -628,16 +686,16 @@ struct Scene3D::Impl {
         updateGhost();
         if (!gate(selected))
             selected.clear();
+        if (std::none_of(
+                routeVisuals.begin(), routeVisuals.end(),
+                [this](const RouteVisual &visual) { return visual.step.id == selectedStep; }))
+            selectedStep.clear();
         dirty = true;
-        if (document && backgroundCacheKey != document->background.cacheKey()) {
-            backgroundCacheKey = document->background.cacheKey();
-            textureDirty = true;
-        }
     }
 
     void updateGhost() {
         ghostBatch.vertices.clear();
-        if (!placement.isEmpty() && haveGhost) {
+        if (!placement.isEmpty() && placement != QStringLiteral("__takeoff") && haveGhost) {
             Gate item = makeGate(placement, placeWidth, placeHeight);
             item.position = ghost;
             buildGate(ghostBatch, item);
@@ -664,17 +722,139 @@ struct Scene3D::Impl {
     }
 
     void releaseGl() {
-        texture.reset();
         program.reset();
-        textureProgram.reset();
         for (auto *batch : batches)
             batch->buffer.destroy();
-        textureBuffer.destroy();
         glReady = false;
-        dirty = textureDirty = true;
+        dirty = true;
+    }
+
+    void takeoffOverlay(QPainter &painter, const QPointF &position, double elevation, double yaw,
+                        bool ghostMarker = false) const {
+        const QVector3D base(static_cast<float>(position.x()), static_cast<float>(elevation + .035),
+                             static_cast<float>(position.y()));
+        QPolygonF ring;
+        for (int i = 0; i < 48; ++i) {
+            const float angle = static_cast<float>(i * Pi / 24);
+            QPointF point;
+            if (project(base + QVector3D(std::cos(angle) * .8f, 0, std::sin(angle) * .8f), &point))
+                ring.append(point);
+        }
+        if (ring.size() != 48)
+            return;
+        painter.save();
+        painter.setOpacity(ghostMarker ? .55 : 1);
+        painter.setBrush(QColor(255, 255, 255, 180));
+        painter.setPen(QPen(Qt::white, 5));
+        painter.drawPolygon(ring);
+        painter.setPen(QPen(QColor("#202020"), 2, ghostMarker ? Qt::DashLine : Qt::SolidLine));
+        painter.drawPolygon(ring);
+        const float angle = static_cast<float>(yaw * Pi / 180);
+        const QVector3D forward(std::sin(angle), 0, std::cos(angle));
+        const QVector3D right(std::cos(angle), 0, -std::sin(angle));
+        QPointF a, b, c;
+        if (project(base + forward * .55f, &a) &&
+            project(base - forward * .2f + right * .24f, &b) &&
+            project(base - forward * .2f - right * .24f, &c)) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor("#252525"));
+            painter.drawPolygon(QPolygonF{a, b, c});
+        }
+        const QRectF label(ring.boundingRect().center().x() - 25, ring.boundingRect().top() - 22,
+                           50, 19);
+        painter.setPen(QColor("#222222"));
+        painter.setBrush(QColor(255, 255, 255, 235));
+        painter.drawRoundedRect(label, 4, 4);
+        painter.setFont(QFont(QStringLiteral("Segoe UI"), 8, QFont::DemiBold));
+        painter.drawText(label, Qt::AlignCenter, QStringLiteral("T/O"));
+        painter.restore();
+    }
+
+    void routeOverlays(QPainter &painter) const {
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+        if (routeVisible && routeVisuals.size() < 400) {
+            // Paint leaders before the badges so nearby labels cannot cross their numbers.
+            painter.setPen(QPen(QColor("#ababab"), .8));
+            for (const auto &visual : routeVisuals) {
+                const auto badge = routeBadge(visual);
+                QPointF point;
+                if (!badge.isEmpty() && project(visual.geometry.position, &point))
+                    painter.drawLine(point, badge.center());
+            }
+            for (const auto &visual : routeVisuals) {
+                const auto &geometry = visual.geometry;
+                const bool active = visual.step.id == selectedStep;
+                QPointF center;
+                if (!project(geometry.position, &center))
+                    continue;
+                if (visual.step.kind == QStringLiteral("guide")) {
+                    const qreal glyphRadius = active ? 6 : 4;
+                    painter.setPen(QPen(QColor(active ? "#111111" : "#888888"), 1.4));
+                    painter.setBrush(active ? QColor("#333333") : Qt::white);
+                    painter.drawPolygon(QPolygonF{
+                        center + QPointF(0, -glyphRadius), center + QPointF(glyphRadius, 0),
+                        center + QPointF(0, glyphRadius), center + QPointF(-glyphRadius, 0)});
+                    continue;
+                }
+                if (active) {
+                    QPolygonF window;
+                    const auto r = geometry.right * static_cast<float>(geometry.openingWidth / 2);
+                    const auto u = geometry.up * static_cast<float>(geometry.openingHeight / 2);
+                    for (const auto &corner :
+                         {geometry.position - r - u, geometry.position + r - u,
+                          geometry.position + r + u, geometry.position - r + u}) {
+                        QPointF point;
+                        if (project(corner, &point))
+                            window.append(point);
+                    }
+                    if (window.size() == 4) {
+                        painter.setBrush(QColor(255, 255, 255, 24));
+                        painter.setPen(QPen(QColor(255, 255, 255, 220), 5));
+                        painter.drawPolygon(window);
+                        painter.setPen(QPen(QColor("#111111"), 2));
+                        painter.drawPolygon(window);
+                    }
+                }
+                QPointF start, finish, wingA, wingB;
+                if (project(geometry.position - geometry.normal * .45f, &start) &&
+                    project(geometry.position + geometry.normal * .45f, &finish) &&
+                    project(geometry.position + geometry.normal * .22f + geometry.right * .13f,
+                            &wingA) &&
+                    project(geometry.position + geometry.normal * .22f - geometry.right * .13f,
+                            &wingB)) {
+                    painter.setPen(QPen(Qt::white, active ? 5 : 4, Qt::SolidLine, Qt::RoundCap));
+                    painter.drawLine(start, finish);
+                    painter.setPen(QPen(QColor(active ? "#111111" : "#666666"), active ? 2.5 : 1.7,
+                                        Qt::SolidLine, Qt::RoundCap));
+                    painter.drawLine(start, finish);
+                    painter.setBrush(QColor(active ? "#111111" : "#666666"));
+                    painter.drawPolygon(QPolygonF{finish, wingA, wingB});
+                }
+            }
+            for (const auto &visual : routeVisuals) {
+                const auto badge = routeBadge(visual);
+                if (badge.isEmpty())
+                    continue;
+                const bool active = visual.step.id == selectedStep;
+                painter.setPen(QPen(QColor(active ? "#111111" : "#666666"), active ? 1.8 : 1));
+                painter.setBrush(active ? QColor("#222222") : QColor("#ffffff"));
+                painter.drawEllipse(badge);
+                painter.setFont(QFont(QStringLiteral("Segoe UI"), 8, QFont::DemiBold));
+                painter.setPen(active ? Qt::white : QColor("#222222"));
+                painter.drawText(badge, Qt::AlignCenter, QString::number(visual.number));
+            }
+        }
+        if (document && document->takeoff.enabled)
+            takeoffOverlay(painter, document->takeoff.position, document->takeoff.elevation,
+                           document->takeoff.yaw);
+        if (haveGhost && placement == QStringLiteral("__takeoff"))
+            takeoffOverlay(painter, ghost, 0, document ? document->takeoff.yaw : 0, true);
+        painter.restore();
     }
 
     void labels(QPainter &painter, bool software) {
+        routeOverlays(painter);
         painter.setRenderHint(QPainter::Antialiasing);
         QFont number(QStringLiteral("Segoe UI"), 8);
         number.setWeight(QFont::DemiBold);
@@ -682,6 +862,8 @@ struct Scene3D::Impl {
         if (document && document->gates.size() < 400) {
             for (qsizetype i = 0; i < document->gates.size(); ++i) {
                 const auto &item = document->gates[i];
+                if (routeVisible && item.id != selected)
+                    continue;
                 QPointF point;
                 const auto metrics = gateFrameMetrics(item);
                 const float top = static_cast<float>(
@@ -693,13 +875,13 @@ struct Scene3D::Impl {
                     point.y() > q->height() - 55)
                     continue;
                 const bool active = item.id == selected;
-                const double badgeWidth = i >= 99 ? 25 : 19;
+                const double badgeWidth = i >= 99 ? 40 : 32;
                 const QRectF badge(point.x() - badgeWidth / 2, point.y() - 8, badgeWidth, 16);
                 painter.setPen(QPen(active ? QColor("#111111") : QColor("#bfbfbf"), 1));
                 painter.setBrush(active ? QColor("#222222") : QColor(255, 255, 255, 238));
                 painter.drawRoundedRect(badge, 5, 5);
                 painter.setPen(active ? Qt::white : QColor("#303030"));
-                painter.drawText(badge, Qt::AlignCenter, QString::number(i + 1));
+                painter.drawText(badge, Qt::AlignCenter, QStringLiteral("G%1").arg(i + 1));
             }
         }
         painter.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 9));
@@ -787,34 +969,6 @@ struct Scene3D::Impl {
             painter.setPen(QPen(QColor("#bcbcbc"), 1));
             painter.setBrush(QColor("#ededed"));
             painter.drawPolygon(floor);
-        }
-        if (document && document->showBackground && !document->background.isNull()) {
-            const auto &image = document->background;
-            const QPointF origin = document->backgroundOrigin;
-            const double x0 = origin.x(), z0 = origin.y();
-            const double x1 = x0 + image.width() * document->metersPerPixel;
-            const double z1 = z0 + image.height() * document->metersPerPixel;
-            const QPolygonF source({QPointF(0, 0), QPointF(image.width(), 0),
-                                    QPointF(image.width(), image.height()),
-                                    QPointF(0, image.height())});
-            QPolygonF destination;
-            for (const auto &world :
-                 {QVector3D(static_cast<float>(x0), 0, static_cast<float>(z0)),
-                  QVector3D(static_cast<float>(x1), 0, static_cast<float>(z0)),
-                  QVector3D(static_cast<float>(x1), 0, static_cast<float>(z1)),
-                  QVector3D(static_cast<float>(x0), 0, static_cast<float>(z1))}) {
-                QPointF screen;
-                if (project(world, &screen))
-                    destination.append(screen);
-            }
-            QTransform transform;
-            if (destination.size() == 4 && QTransform::quadToQuad(source, destination, transform)) {
-                painter.save();
-                painter.setOpacity(document->backgroundOpacity);
-                painter.setTransform(transform);
-                painter.drawImage(QPointF(0, 0), image);
-                painter.restore();
-            }
         }
         const auto drawLines = [&](const Batch &batch, double width) {
             for (size_t i = 1; i < batch.vertices.size(); i += 2) {
@@ -991,18 +1145,20 @@ void Scene3D::fitTrack() {
                     for (const float z : {-halfDepth, halfDepth})
                         fitPoints.push_back(gatePoint(gate, {x, y, z}));
         }
-        const auto &doc = *d_->document;
-        // Once components exist, image legends and blank margins must not shrink the track.
-        if (doc.gates.isEmpty() && doc.showBackground && !doc.background.isNull()) {
-            const double x0 = doc.backgroundOrigin.x(), z0 = doc.backgroundOrigin.y();
-            const double x1 = x0 + doc.background.width() * doc.metersPerPixel;
-            const double z1 = z0 + doc.background.height() * doc.metersPerPixel;
-            for (const double x : {x0, x1})
-                for (const double z : {z0, z1})
-                    fitPoints.emplace_back(static_cast<float>(x), 0, static_cast<float>(z));
+        if (d_->document->takeoff.enabled) {
+            const auto &takeoff = d_->document->takeoff;
+            for (const float x : {-1.f, 1.f})
+                for (const float z : {-1.f, 1.f})
+                    fitPoints.emplace_back(static_cast<float>(takeoff.position.x()) + x,
+                                           static_cast<float>(takeoff.elevation),
+                                           static_cast<float>(takeoff.position.y()) + z);
         }
     }
-    for (size_t i = 0; i < d_->route.size(); i += 4)
+    const size_t routeStride =
+        d_->document && (d_->document->routeStepsDefined || !d_->document->routeSteps.isEmpty())
+            ? 1
+            : 4;
+    for (size_t i = 0; i < d_->route.size(); i += routeStride)
         fitPoints.push_back(d_->route[i]);
     if (fitPoints.empty()) {
         const QRectF bounds = d_->contentBounds.adjusted(-1.5, -1.5, 1.5, 1.5);
@@ -1078,6 +1234,24 @@ void Scene3D::selectGate(const QString &id) {
 
 QString Scene3D::selectedGate() const {
     return d_->selected;
+}
+
+void Scene3D::selectRouteStep(const QString &id) {
+    const auto found =
+        std::find_if(d_->routeVisuals.begin(), d_->routeVisuals.end(),
+                     [&id](const Impl::RouteVisual &visual) { return visual.step.id == id; });
+    const QString selected = found == d_->routeVisuals.end() ? QString() : id;
+    if (selected == d_->selectedStep)
+        return;
+    d_->selectedStep = selected;
+    update();
+    d_->fallback->update();
+    if (onRouteSelection)
+        onRouteSelection(selected);
+}
+
+QString Scene3D::selectedRouteStep() const {
+    return d_->selectedStep;
 }
 
 void Scene3D::setPlacement(QString type, double width, double height) {
@@ -1157,28 +1331,9 @@ void Scene3D::initializeGL() {
         d_->fallback->show();
         return;
     }
-    d_->textureProgram = std::make_unique<QOpenGLShaderProgram>();
-    const char *textureVertex = "#version 120\nattribute vec3 position;attribute vec2 uv;uniform "
-                                "mat4 matrix;varying vec2 texCoord;"
-                                "void main(){texCoord=uv;gl_Position=matrix*vec4(position,1.0);}";
-    const char *textureFragment =
-        "#version 120\nvarying vec2 texCoord;uniform sampler2D image;uniform float opacity;"
-        "void main(){vec4 "
-        "sampleColor=texture2D(image,texCoord);gl_FragColor=vec4(sampleColor.rgb,sampleColor.a*"
-        "opacity);}";
-    if (!d_->textureProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, textureVertex) ||
-        !d_->textureProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, textureFragment)) {
-        d_->textureProgram.reset();
-    } else {
-        d_->textureProgram->bindAttributeLocation("position", 0);
-        d_->textureProgram->bindAttributeLocation("uv", 1);
-        if (!d_->textureProgram->link())
-            d_->textureProgram.reset();
-    }
     for (auto *batch : d_->batches)
         batch->buffer.create();
-    d_->textureBuffer.create();
-    d_->dirty = d_->textureDirty = true;
+    d_->dirty = true;
     d_->glReady = true;
     d_->fallback->hide();
     QObject::connect(context(), &QOpenGLContext::aboutToBeDestroyed, this, [this] {
@@ -1240,51 +1395,6 @@ void Scene3D::paintGL() {
         d_->program->release();
     };
     draw(d_->ground);
-    if (d_->document && d_->document->showBackground && !d_->document->background.isNull() &&
-        d_->textureProgram) {
-        if (d_->textureDirty) {
-            QImage image = d_->document->background;
-            if (image.width() > 4096 || image.height() > 4096)
-                image = image.scaled(4096, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            image = image.convertToFormat(QImage::Format_RGBA8888).mirrored();
-            d_->texture =
-                std::make_unique<QOpenGLTexture>(image, QOpenGLTexture::DontGenerateMipMaps);
-            d_->texture->setMinMagFilters(QOpenGLTexture::Linear, QOpenGLTexture::Linear);
-            d_->texture->setWrapMode(QOpenGLTexture::ClampToEdge);
-            d_->textureDirty = false;
-        }
-        const auto &doc = *d_->document;
-        const float x0 = static_cast<float>(doc.backgroundOrigin.x()),
-                    z0 = static_cast<float>(doc.backgroundOrigin.y());
-        const float x1 = x0 + static_cast<float>(doc.background.width() * doc.metersPerPixel);
-        const float z1 = z0 + static_cast<float>(doc.background.height() * doc.metersPerPixel);
-        const std::array<TextureVertex, 6> vertices{{{x0, -.025f, z0, 0, 1},
-                                                     {x1, -.025f, z0, 1, 1},
-                                                     {x1, -.025f, z1, 1, 0},
-                                                     {x0, -.025f, z0, 0, 1},
-                                                     {x1, -.025f, z1, 1, 0},
-                                                     {x0, -.025f, z1, 0, 0}}};
-        d_->textureBuffer.bind();
-        d_->textureBuffer.allocate(vertices.data(),
-                                   static_cast<int>(vertices.size() * sizeof(TextureVertex)));
-        d_->textureProgram->bind();
-        d_->textureProgram->setUniformValue("matrix", d_->viewProjection);
-        d_->textureProgram->setUniformValue("opacity", static_cast<float>(doc.backgroundOpacity));
-        d_->textureProgram->setUniformValue("image", 0);
-        d_->texture->bind(0);
-        d_->textureProgram->enableAttributeArray(0);
-        d_->textureProgram->enableAttributeArray(1);
-        d_->textureProgram->setAttributeBuffer(0, GL_FLOAT, offsetof(TextureVertex, x), 3,
-                                               sizeof(TextureVertex));
-        d_->textureProgram->setAttributeBuffer(1, GL_FLOAT, offsetof(TextureVertex, u), 2,
-                                               sizeof(TextureVertex));
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        d_->textureProgram->disableAttributeArray(0);
-        d_->textureProgram->disableAttributeArray(1);
-        d_->texture->release();
-        d_->textureProgram->release();
-        d_->textureBuffer.release();
-    }
     draw(d_->shadows);
     draw(d_->grid);
     if (!d_->halo.vertices.empty()) {
@@ -1371,6 +1481,14 @@ void Scene3D::mousePressEvent(QMouseEvent *event) {
         if (d_->intersect(event->position(), 0, &point) && onPlace)
             onPlace(d_->placement, d_->snapped(point), d_->placeWidth, d_->placeHeight);
     } else if (event->button() == Qt::LeftButton) {
+        const QString routeId = d_->pickRoute(event->position());
+        if (!routeId.isEmpty()) {
+            selectRouteStep(routeId);
+            d_->gesture = Impl::Gesture::SelectOnly;
+            setCursor(Qt::PointingHandCursor);
+            event->accept();
+            return;
+        }
         const QString id = d_->pick(event->position());
         const bool alreadySelected = !id.isEmpty() && id == d_->selected;
         selectGate(id);
@@ -1446,7 +1564,20 @@ void Scene3D::mouseMoveEvent(QMouseEvent *event) {
         update();
         d_->fallback->update();
     } else {
-        setCursor(d_->pick(event->position()).isEmpty() ? Qt::ArrowCursor : Qt::OpenHandCursor);
+        const auto stepId = d_->pickRoute(event->position());
+        setCursor(!stepId.isEmpty()                       ? Qt::PointingHandCursor
+                  : d_->pick(event->position()).isEmpty() ? Qt::ArrowCursor
+                                                          : Qt::OpenHandCursor);
+        QString tooltip;
+        for (const auto &visual : d_->routeVisuals)
+            if (visual.step.id == stepId) {
+                tooltip = QStringLiteral("过门 %1 · 实体 G%2 · 第 %3 次穿越")
+                              .arg(visual.number)
+                              .arg(visual.gateNumber)
+                              .arg(visual.visit);
+                break;
+            }
+        setToolTip(tooltip);
     }
     d_->lastMouse = event->position();
     event->accept();

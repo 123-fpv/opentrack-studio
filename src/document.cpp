@@ -2,12 +2,15 @@
 
 #include <QBuffer>
 #include <QFile>
+#include <QHash>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QQuaternion>
 #include <QSaveFile>
 #include <QSet>
+#include <QStringList>
 #include <QUuid>
 
 #include <algorithm>
@@ -20,7 +23,10 @@ constexpr qsizetype kMaxEncodedImageBytes = 96LL * 1024 * 1024;
 constexpr int kMaxImageSide = 16384;
 constexpr qint64 kMaxImagePixels = 64LL * 1024 * 1024;
 constexpr qsizetype kMaxGates = 20000;
+constexpr qsizetype kMaxRouteSteps = 100000;
 constexpr double kMaxCoordinate = 1000000.0;
+
+RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step);
 
 bool fail(QString *error, const QString &message) {
     if (error)
@@ -60,6 +66,34 @@ bool point(const QJsonValue &value, QPointF *output, QString *error, const QStri
         std::abs(y) > kMaxCoordinate)
         return fail(error, QStringLiteral("字段 %1 包含无效坐标。").arg(field));
     *output = QPointF(x, y);
+    return true;
+}
+
+bool vector3(const QJsonValue &value, QVector3D *output, QString *error) {
+    if (!value.isArray() || value.toArray().size() != 3)
+        return fail(error, QStringLiteral("localGuide 必须是三个数字组成的数组。"));
+    const auto array = value.toArray();
+    QVector3D candidate;
+    for (int i = 0; i < 3; ++i) {
+        const auto entry = array[i];
+        if (!entry.isDouble() || !std::isfinite(entry.toDouble()) ||
+            std::abs(entry.toDouble()) > kMaxCoordinate)
+            return fail(error, QStringLiteral("localGuide 包含无效坐标。"));
+        candidate[i] = static_cast<float>(entry.toDouble());
+    }
+    *output = candidate;
+    return true;
+}
+
+bool indexField(const QJsonObject &object, const QString &key, int *output, QString *error) {
+    const auto value = object.value(key);
+    if (value.isUndefined())
+        return true;
+    const double index = value.toDouble(-1);
+    if (!value.isDouble() || !std::isfinite(index) || index < 0 || index > 10000 ||
+        index != std::floor(index))
+        return fail(error, QStringLiteral("路线字段 %1 必须是非负整数。").arg(key));
+    *output = static_cast<int>(index);
     return true;
 }
 
@@ -134,12 +168,14 @@ bool validateDocument(const TrackDocument &document, QString *error) {
         return fail(error,
                     QStringLiteral("底图尺寸过大，最大边长为 16384，最大像素数为 6400 万。"));
     QSet<QString> ids;
+    QHash<QString, const Gate *> gatesById;
     for (const Gate &gate : document.gates) {
         if (!canonicalRgbColor(gate.extra.value(QStringLiteral("color")), nullptr, error))
             return false;
         if (gate.id.trimmed().isEmpty() || gate.id.size() > 128 || ids.contains(gate.id))
             return fail(error, QStringLiteral("门架 ID 为空、过长或重复。"));
         ids.insert(gate.id);
+        gatesById.insert(gate.id, &gate);
         if (gate.type.trimmed().isEmpty() || gate.type.size() > 64 || gate.label.size() > 4096 ||
             !inRange(gate.position.x(), -kMaxCoordinate, kMaxCoordinate) ||
             !inRange(gate.position.y(), -kMaxCoordinate, kMaxCoordinate) ||
@@ -173,6 +209,35 @@ bool validateDocument(const TrackDocument &document, QString *error) {
             }
         }
     }
+    if (document.routeSteps.size() > kMaxRouteSteps)
+        return fail(error, QStringLiteral("路线步骤超过 100000 个。"));
+    ids.clear();
+    for (const auto &step : document.routeSteps) {
+        if (step.id.trimmed().isEmpty() || step.id.size() > 128 || ids.contains(step.id) ||
+            step.gateId.size() > 128 || step.label.size() > 4096 ||
+            (step.kind != QStringLiteral("pass") && step.kind != QStringLiteral("guide")) ||
+            step.column < 0 || step.level < 0 || step.column > 10000 || step.level > 10000 ||
+            !QStringList{QStringLiteral("front"), QStringLiteral("back"), QStringLiteral("left"),
+                         QStringLiteral("right"), QStringLiteral("top"), QStringLiteral("bottom")}
+                 .contains(step.face))
+            return fail(error, QStringLiteral("路线步骤的 ID、类型或标签无效。"));
+        ids.insert(step.id);
+        const auto *gate = gatesById.value(step.gateId, nullptr);
+        if ((step.kind == QStringLiteral("pass") && !gate) || (!step.gateId.isEmpty() && !gate))
+            return fail(error, QStringLiteral("路线步骤 %1 引用了不存在的组件。").arg(step.id));
+        for (int axis = 0; axis < 3; ++axis) {
+            const double limit = gate ? 1000.0 : kMaxCoordinate;
+            if (!inRange(step.localGuide[axis], -limit, limit))
+                return fail(error, QStringLiteral("路线步骤 %1 的引导坐标无效。").arg(step.id));
+        }
+        if (!geometryForStep(gate, step).valid)
+            return fail(error, QStringLiteral("路线步骤 %1 的面、通过格或开口无效。").arg(step.id));
+    }
+    if (!inRange(document.takeoff.position.x(), -kMaxCoordinate, kMaxCoordinate) ||
+        !inRange(document.takeoff.position.y(), -kMaxCoordinate, kMaxCoordinate) ||
+        !inRange(document.takeoff.elevation, -10000, 10000) ||
+        !inRange(document.takeoff.yaw, -1000000000, 1000000000))
+        return fail(error, QStringLiteral("独立起飞点的位置、高度或朝向无效。"));
     return true;
 }
 
@@ -205,7 +270,7 @@ QJsonObject toJson(const TrackDocument &document) {
         buffer.open(QIODevice::WriteOnly);
         document.background.save(&buffer, "PNG");
     }
-    return QJsonObject{
+    QJsonObject result{
         {QStringLiteral("format"), QStringLiteral("OpenTrackStudio")},
         {QStringLiteral("version"), 1},
         {QStringLiteral("name"), document.name},
@@ -220,6 +285,30 @@ QJsonObject toJson(const TrackDocument &document) {
                      {QStringLiteral("gridSize"), document.gridSize},
                      {QStringLiteral("closedLoop"), document.closedLoop}}},
         {QStringLiteral("extra"), document.extra}};
+    if (document.routeStepsDefined || !document.routeSteps.isEmpty()) {
+        QJsonArray steps;
+        for (const auto &step : document.routeSteps)
+            steps.append(QJsonObject{
+                {QStringLiteral("id"), step.id},
+                {QStringLiteral("gateId"), step.gateId},
+                {QStringLiteral("kind"), step.kind},
+                {QStringLiteral("face"), step.face},
+                {QStringLiteral("column"), step.column},
+                {QStringLiteral("level"), step.level},
+                {QStringLiteral("reverse"), step.reverse},
+                {QStringLiteral("localGuide"),
+                 QJsonArray{step.localGuide.x(), step.localGuide.y(), step.localGuide.z()}},
+                {QStringLiteral("label"), step.label},
+                {QStringLiteral("extra"), step.extra}});
+        result.insert(QStringLiteral("routeSteps"), steps);
+    }
+    result.insert(QStringLiteral("takeoff"),
+                  QJsonObject{{QStringLiteral("enabled"), document.takeoff.enabled},
+                              {QStringLiteral("position"), coordinates(document.takeoff.position)},
+                              {QStringLiteral("elevation"), document.takeoff.elevation},
+                              {QStringLiteral("yaw"), document.takeoff.yaw},
+                              {QStringLiteral("extra"), document.takeoff.extra}});
+    return result;
 }
 
 bool fromJson(const QJsonObject &object, TrackDocument *document, QString *error) {
@@ -265,6 +354,50 @@ bool fromJson(const QJsonObject &object, TrackDocument *document, QString *error
             gate.extra.insert(QStringLiteral("color"), color);
         }
         candidate.gates.append(gate);
+    }
+
+    if (object.contains(QStringLiteral("routeSteps"))) {
+        const auto value = object.value(QStringLiteral("routeSteps"));
+        if (!value.isArray() || value.toArray().size() > kMaxRouteSteps)
+            return fail(error, QStringLiteral("路线步骤必须是最多 100000 项的数组。"));
+        candidate.routeStepsDefined = true;
+        for (const auto &entry : value.toArray()) {
+            if (!entry.isObject())
+                return fail(error, QStringLiteral("路线步骤必须是对象。"));
+            const auto item = entry.toObject();
+            RouteStep step;
+            if (!textField(item, QStringLiteral("id"), &step.id, 128, true, error) ||
+                !textField(item, QStringLiteral("gateId"), &step.gateId, 128, false, error) ||
+                !textField(item, QStringLiteral("kind"), &step.kind, 32, false, error) ||
+                !textField(item, QStringLiteral("face"), &step.face, 32, false, error) ||
+                !textField(item, QStringLiteral("label"), &step.label, 4096, false, error) ||
+                !indexField(item, QStringLiteral("column"), &step.column, error) ||
+                !indexField(item, QStringLiteral("level"), &step.level, error) ||
+                !boolField(item, QStringLiteral("reverse"), &step.reverse, error) ||
+                !extraField(item, &step.extra, error))
+                return false;
+            if (item.contains(QStringLiteral("localGuide")) &&
+                !vector3(item.value(QStringLiteral("localGuide")), &step.localGuide, error))
+                return false;
+            candidate.routeSteps.append(step);
+        }
+    }
+    if (object.contains(QStringLiteral("takeoff"))) {
+        const auto value = object.value(QStringLiteral("takeoff"));
+        if (!value.isObject())
+            return fail(error, QStringLiteral("takeoff 必须是独立起飞点对象。"));
+        const auto item = value.toObject();
+        if (!boolField(item, QStringLiteral("enabled"), &candidate.takeoff.enabled, error) ||
+            !number(item, QStringLiteral("elevation"), &candidate.takeoff.elevation, -10000, 10000,
+                    error, false) ||
+            !number(item, QStringLiteral("yaw"), &candidate.takeoff.yaw, -1000000000, 1000000000,
+                    error, false) ||
+            !extraField(item, &candidate.takeoff.extra, error))
+            return false;
+        if (item.contains(QStringLiteral("position")) &&
+            !point(item.value(QStringLiteral("position")), &candidate.takeoff.position, error,
+                   QStringLiteral("takeoff.position")))
+            return false;
     }
 
     const auto viewValue = object.value(QStringLiteral("view"));
@@ -588,8 +721,261 @@ double gatePassageElevation(const Gate &gate) {
     return gate.elevation + (level - (metrics.levels - 1) / 2.0) * gate.height;
 }
 
+namespace {
+RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
+    RouteStepGeometry geometry;
+    if (step.kind == QStringLiteral("guide")) {
+        if (!gate) {
+            if (!step.gateId.isEmpty())
+                return geometry;
+            geometry.position = step.localGuide;
+        } else {
+            const auto metrics = gateFrameMetrics(*gate);
+            const QVector3D scale(static_cast<float>(metrics.columns * gate->width / 2),
+                                  static_cast<float>(metrics.levels * gate->height / 2),
+                                  static_cast<float>(gate->width / 2));
+            const auto rotation =
+                QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate->yaw));
+            geometry.position = QVector3D(static_cast<float>(gate->position.x()),
+                                          static_cast<float>(gate->elevation),
+                                          static_cast<float>(gate->position.y())) +
+                                rotation.rotatedVector(step.localGuide * scale);
+        }
+        geometry.valid = std::isfinite(geometry.position.x()) &&
+                         std::isfinite(geometry.position.y()) &&
+                         std::isfinite(geometry.position.z());
+        return geometry;
+    }
+    if (step.kind != QStringLiteral("pass") || !gate)
+        return geometry;
+    const auto metrics = gateFrameMetrics(*gate);
+    if (step.column < 0 || step.column >= metrics.columns || step.level < 0 ||
+        step.level >= metrics.levels)
+        return geometry;
+    const bool cube = metrics.centerDepth > 0;
+    const float x = static_cast<float>((step.column - (metrics.columns - 1) / 2.0) * gate->width);
+    const float y = static_cast<float>((step.level - (metrics.levels - 1) / 2.0) * gate->height);
+    const float halfDepth = static_cast<float>(metrics.centerDepth / 2);
+    QVector3D local(x, y, 0), normal, right, up(0, 1, 0);
+    geometry.openingWidth = gate->type == QStringLiteral("pillar") ? 2.4 : metrics.openingWidth;
+    geometry.openingHeight =
+        gate->type == QStringLiteral("pillar") ? gate->height : metrics.openingHeight;
+    if (step.face == QStringLiteral("front")) {
+        local.setZ(-halfDepth);
+        normal = {0, 0, 1};
+        right = {1, 0, 0};
+    } else if (step.face == QStringLiteral("back")) {
+        local.setZ(halfDepth);
+        normal = {0, 0, -1};
+        right = {-1, 0, 0};
+    } else if (!cube) {
+        return {};
+    } else if (step.face == QStringLiteral("left")) {
+        local = {-static_cast<float>(gate->width / 2), y, 0};
+        normal = {1, 0, 0};
+        right = {0, 0, -1};
+    } else if (step.face == QStringLiteral("right")) {
+        local = {static_cast<float>(gate->width / 2), y, 0};
+        normal = {-1, 0, 0};
+        right = {0, 0, 1};
+    } else if (step.face == QStringLiteral("top") || step.face == QStringLiteral("bottom")) {
+        const bool top = step.face == QStringLiteral("top");
+        local = {x, y + static_cast<float>((top ? 1 : -1) * gate->height / 2), 0};
+        normal = {0, top ? -1.f : 1.f, 0};
+        right = {1, 0, 0};
+        up = {0, 0, top ? 1.f : -1.f};
+        geometry.openingHeight = metrics.openingWidth;
+    } else {
+        return {};
+    }
+    if (gate->type == QStringLiteral("pillar")) {
+        const float side = gate->extra.value(QStringLiteral("passSide")).toInt(1) < 0 ? -1.f : 1.f;
+        local.setX(static_cast<float>(gate->width / 2 + 1.55) * side);
+    }
+    if (geometry.openingWidth <= 0 || geometry.openingHeight <= 0)
+        return {};
+    auto rotation = QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate->yaw));
+    if (gate->type == QStringLiteral("dive"))
+        rotation *= QQuaternion::fromAxisAndAngle(1, 0, 0, 90);
+    if (step.reverse) {
+        normal = -normal;
+        right = -right;
+    }
+    geometry.position =
+        QVector3D(static_cast<float>(gate->position.x()), static_cast<float>(gate->elevation),
+                  static_cast<float>(gate->position.y())) +
+        rotation.rotatedVector(local);
+    geometry.normal = rotation.rotatedVector(normal).normalized();
+    geometry.right = rotation.rotatedVector(right).normalized();
+    geometry.up = rotation.rotatedVector(up).normalized();
+    geometry.valid = true;
+    return geometry;
+}
+} // namespace
+
+RouteStepGeometry routeStepGeometry(const TrackDocument &document, const RouteStep &step) {
+    const Gate *gate = nullptr;
+    for (const auto &candidate : document.gates)
+        if (candidate.id == step.gateId) {
+            gate = &candidate;
+            break;
+        }
+    return geometryForStep(gate, step);
+}
+
+QVector3D routeStepPosition(const TrackDocument &document, const RouteStep &step) {
+    return routeStepGeometry(document, step).position;
+}
+
+QVector3D routeStepNormal(const TrackDocument &document, const RouteStep &step) {
+    return routeStepGeometry(document, step).normal;
+}
+
+QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document) {
+    if (document.routeStepsDefined || !document.routeSteps.isEmpty())
+        return document.routeSteps;
+    QVector<RouteStep> steps;
+    steps.reserve(document.gates.size());
+    for (const auto &gate : document.gates) {
+        RouteStep step;
+        step.id = gate.id;
+        step.gateId = gate.id;
+        step.column = gate.extra.value(QStringLiteral("passColumn")).toInt(0);
+        step.level = gate.extra.value(QStringLiteral("passLevel")).toInt(0);
+        steps.append(step);
+    }
+    return steps;
+}
+
+QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
+    QVector<RouteStep> steps;
+    const auto metrics = gateFrameMetrics(gate);
+    const auto addPass = [&steps, &gate](int column, int level, const QString &face,
+                                         bool reverse = false) {
+        RouteStep step;
+        step.id = newGateId();
+        step.gateId = gate.id;
+        step.column = column;
+        step.level = level;
+        step.face = face;
+        step.reverse = reverse;
+        steps.append(step);
+    };
+    const auto addGuide = [&steps, &gate](const QVector3D &local) {
+        RouteStep step;
+        step.id = newGateId();
+        step.gateId = gate.id;
+        step.kind = QStringLiteral("guide");
+        step.localGuide = local;
+        steps.append(step);
+    };
+    if (pattern == QStringLiteral("single")) {
+        addPass(std::clamp(gate.extra.value(QStringLiteral("passColumn")).toInt(0), 0,
+                           metrics.columns - 1),
+                std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(0), 0,
+                           metrics.levels - 1),
+                QStringLiteral("front"));
+    } else if ((pattern == QStringLiteral("lower-upper") ||
+                pattern == QStringLiteral("upper-lower")) &&
+               metrics.centerlineModel && metrics.levels > 1 && metrics.centerDepth == 0) {
+        const bool lowerFirst = pattern == QStringLiteral("lower-upper");
+        addPass(0, lowerFirst ? 0 : metrics.levels - 1, QStringLiteral("front"));
+        addGuide({0, 0, .8f});
+        addPass(0, lowerFirst ? metrics.levels - 1 : 0, QStringLiteral("back"));
+    } else if ((pattern == QStringLiteral("left-right") ||
+                pattern == QStringLiteral("right-left")) &&
+               metrics.centerlineModel && metrics.columns > 1) {
+        const bool leftFirst = pattern == QStringLiteral("left-right");
+        for (int i = 0; i < metrics.columns; ++i) {
+            const int column = leftFirst ? i : metrics.columns - i - 1;
+            if (i > 0) {
+                const float x = static_cast<float>(
+                    (column + (leftFirst ? -.5 : .5) - (metrics.columns - 1) / 2.0) * 2 /
+                    metrics.columns);
+                addGuide({x, 0, i % 2 ? .8f : -.8f});
+            }
+            addPass(column, 0, i % 2 ? QStringLiteral("back") : QStringLiteral("front"));
+        }
+    } else if ((pattern == QStringLiteral("gravity-dive") ||
+                pattern == QStringLiteral("gravity-climb")) &&
+               metrics.centerDepth > 0) {
+        if (pattern == QStringLiteral("gravity-dive")) {
+            for (int level = metrics.levels - 1; level >= 0; --level)
+                addPass(0, level, QStringLiteral("top"));
+            addPass(0, 0, QStringLiteral("front"), true);
+        } else {
+            addPass(0, 0, QStringLiteral("front"));
+            for (int level = 0; level < metrics.levels; ++level)
+                addPass(0, level, QStringLiteral("top"), true);
+        }
+    }
+    return steps;
+}
+
+QVector<QVector3D> routePolyline(const TrackDocument &document) {
+    QVector<QVector3D> points;
+    const auto steps = effectiveRouteSteps(document);
+    QHash<QString, const Gate *> gates;
+    for (const auto &gate : document.gates)
+        gates.insert(gate.id, &gate);
+    const auto append = [&points](const QVector3D &point) {
+        if (points.isEmpty() || (points.last() - point).lengthSquared() > 1e-10f)
+            points.append(point);
+    };
+    const bool explicitRoute = document.routeStepsDefined || !document.routeSteps.isEmpty();
+    for (const auto &step : steps) {
+        const auto geometry = geometryForStep(gates.value(step.gateId, nullptr), step);
+        if (!geometry.valid)
+            continue;
+        if (explicitRoute && step.kind == QStringLiteral("pass")) {
+            const float lead = static_cast<float>(
+                std::clamp(std::min(geometry.openingWidth, geometry.openingHeight) * .2, .15, .6));
+            append(geometry.position - geometry.normal * lead);
+            append(geometry.position);
+            append(geometry.position + geometry.normal * lead);
+        } else {
+            append(geometry.position);
+        }
+    }
+    if (explicitRoute || points.size() < 3) {
+        if (document.closedLoop && steps.size() > 1 && !points.isEmpty())
+            append(points.first());
+        return points;
+    }
+    const auto controls = points;
+    points.clear();
+    const qsizetype count = controls.size();
+    const auto at = [&document, &controls, count](qsizetype index) {
+        return controls[document.closedLoop ? (index % count + count) % count
+                                            : std::clamp(index, qsizetype(0), count - 1)];
+    };
+    const qsizetype segments = document.closedLoop ? count : count - 1;
+    const int samples = std::clamp(12000 / static_cast<int>(segments), 3, 28);
+    for (qsizetype segment = 0; segment < segments; ++segment) {
+        const auto p0 = at(segment - 1), p1 = at(segment), p2 = at(segment + 1),
+                   p3 = at(segment + 2);
+        for (int j = 0; j < samples; ++j) {
+            const float t = static_cast<float>(j) / samples, t2 = t * t, t3 = t2 * t;
+            append(((p1 * 2) + (p2 - p0) * t + (p0 * 2 - p1 * 5 + p2 * 4 - p3) * t2 +
+                    (-p0 + p1 * 3 - p2 * 3 + p3) * t3) *
+                   .5f);
+        }
+    }
+    append(at(segments));
+    return points;
+}
+
 QPainterPath routePath(const TrackDocument &document) {
     QPainterPath path;
+    if (document.routeStepsDefined || !document.routeSteps.isEmpty()) {
+        const auto points = routePolyline(document);
+        if (!points.isEmpty()) {
+            path.moveTo(points.first().x(), points.first().z());
+            for (qsizetype i = 1; i < points.size(); ++i)
+                path.lineTo(points[i].x(), points[i].z());
+        }
+        return path;
+    }
     const qsizetype count = document.gates.size();
     if (count == 0)
         return path;
@@ -621,6 +1007,13 @@ QPainterPath routePath(const TrackDocument &document) {
 }
 
 double routeLength(const TrackDocument &document) {
+    if (document.routeStepsDefined || !document.routeSteps.isEmpty()) {
+        const auto points = routePolyline(document);
+        double length = 0;
+        for (qsizetype i = 1; i < points.size(); ++i)
+            length += (points[i] - points[i - 1]).length();
+        return length;
+    }
     // Qt integrates cubic segments adaptively; this is geometric path length,
     // not a claimed flight distance or physics simulation.
     return routePath(document).length();

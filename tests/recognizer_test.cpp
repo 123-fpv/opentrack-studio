@@ -44,7 +44,7 @@ bool containsNear(const ot::RecognitionResult &result, QPointF originalPixel, do
 
 // An original schematic, not a copy of a user's diagram: navy symbols with
 // magenta overpainting, a separate legend, compound cells and an entry platform.
-QImage inkSchematic() {
+QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialTriple = false) {
     QImage image(1000, 760, QImage::Format_ARGB32);
     image.fill(Qt::white);
     QPainter painter(&image);
@@ -93,16 +93,38 @@ QImage inkSchematic() {
     frame(QPointF(75, 180));
     frame(QPointF(75, 260), 2);
     cube(QPointF(75, 340));
-    painter.fillRect(QRectF(805, 650, 30, 55), ink);
+    if (reversed)
+        painter.fillRect(QRectF(930, 405, 45, 30), ink);
+    else
+        painter.fillRect(QRectF(805, 650, 30, 55), ink);
     painter.setPen(QPen(magenta, 3));
     QPainterPath line;
-    line.moveTo(course[0]);
-    for (int i = 1; i < course.size(); ++i)
-        line.lineTo(course[i]);
+    QVector<QPointF> path = course;
+    if (maneuvers) {
+        path = {{820, 420}, {820, 210}, {690, 120}};
+        if (!partialTriple)
+            path += QVector<QPointF>{{675, 80}, {660, 120}, {645, 160}, {630, 120}};
+        else
+            path += QVector<QPointF>{{695, 80}, {430, 80}};
+        path +=
+            QVector<QPointF>{{430, 120}, {300, 125}, {255, 145}, {250, 175}, {240, 205}, {180, 360},
+                             {250, 540}, {465, 600}, {450, 640}, {435, 600}, {640, 565}, {600, 555},
+                             {640, 535}, {720, 450}, {725, 425}, {750, 395}};
+    }
+    line.moveTo(path[0]);
+    for (int i = 1; i < path.size(); ++i)
+        line.lineTo(path[i]);
     line.closeSubpath();
     painter.drawPath(line);
-    painter.drawLine(QPointF(820, 650), course[0]);
+    painter.drawLine(reversed ? QPointF(930, 420) : QPointF(820, 650), course[0]);
     painter.drawLine(QPointF(50, 410), QPointF(95, 410));
+    if (maneuvers) {
+        // Opaque stock edges interrupt the original route at two apertures.
+        // Their short, aligned line fragments must be reconnected before tracing.
+        painter.setPen(QPen(ink, 5));
+        painter.drawLine(QPointF(685, 105), QPointF(695, 105));
+        painter.drawLine(QPointF(635, 550), QPointF(645, 550));
+    }
     return image;
 }
 } // namespace
@@ -290,6 +312,84 @@ int main(int argc, char **argv) {
         }
     check(!schematic.warnings.isEmpty(),
           "compound internal passages remain explicitly subject to review");
+
+    const auto passagesFor = [](const ot::TrackDocument &document, const QString &type) {
+        QVector<ot::RouteStep> result;
+        for (const auto &gate : document.gates)
+            if (gate.type == type)
+                for (const auto &step : document.routeSteps)
+                    if (step.gateId == gate.id && step.kind == QStringLiteral("pass"))
+                        result.push_back(step);
+        return result;
+    };
+    const auto maneuvers = ot::recognizeTrack(inkSchematic(true), manual);
+    check(maneuvers.detectedCount == 10, "internal loops do not create extra physical components");
+    check(maneuvers.document.routeStepsDefined, "traced maneuvers are an explicit route");
+    check(maneuvers.document.takeoff.enabled && maneuvers.document.takeoff.elevation == 0,
+          "solid launch platform is independent of gates and passages");
+    check(!maneuvers.document.showBackground, "generated scene hides the source image by default");
+    auto triple = passagesFor(maneuvers.document, QStringLiteral("triple"));
+    check(triple.size() == 3, "three observed windows create three references to one triple");
+    if (triple.size() == 3) {
+        check(triple[0].column == 0 && triple[1].column == 1 && triple[2].column == 2,
+              "triple column order follows the printed waveform");
+        check(triple[0].face == "front" && triple[1].face == "back" && triple[2].face == "front",
+              "printed serpentine receives alternating passage faces");
+    }
+    const auto ladder = passagesFor(maneuvers.document, QStringLiteral("ladder"));
+    check(ladder.size() == 2, "two visible ladder apertures create two passes");
+    if (ladder.size() == 2)
+        check(ladder[0].level == 0 && ladder[1].level == 1,
+              "lower-to-upper ladder order comes from line evidence");
+    const auto cube = passagesFor(maneuvers.document, QStringLiteral("cube"));
+    check(cube.size() == 2, "visible roof/body transition creates two cube passes");
+    if (cube.size() == 2)
+        check(cube[0].face == "front" && cube[1].face == "top" && cube[1].reverse,
+              "body-to-roof traversal is a gravity climb");
+    const auto reverse = ot::recognizeTrack(inkSchematic(true, true), manual);
+    const auto reverseTriple = passagesFor(reverse.document, QStringLiteral("triple"));
+    check(reverseTriple.size() == 3,
+          "opposite direction retains all three observed triple windows");
+    if (triple.size() == 3 && reverseTriple.size() == 3) {
+        check(ot::routeStepPosition(maneuvers.document, triple.front()).x() >
+                      ot::routeStepPosition(maneuvers.document, triple.back()).x() &&
+                  ot::routeStepPosition(reverse.document, reverseTriple.front()).x() <
+                      ot::routeStepPosition(reverse.document, reverseTriple.back()).x(),
+              "reversing the printed waveform reverses world-space window order");
+    }
+    const auto reverseLadder = passagesFor(reverse.document, QStringLiteral("ladder"));
+    check(reverseLadder.size() == 2, "opposite launch direction preserves the ladder's two passes");
+    if (reverseLadder.size() == 2)
+        check(reverseLadder[0].level == 1 && reverseLadder[1].level == 0,
+              "reversing drawn route reverses upper/lower order without a type preset");
+    const auto reverseCube = passagesFor(reverse.document, QStringLiteral("cube"));
+    if (reverseCube.size() == 2)
+        check(reverseCube[0].face == "top" && reverseCube[1].face == "front",
+              "opposite roof/body traversal becomes a gravity dive");
+    else
+        check(false, "reversed cube still exposes its visible roof/body transition");
+    const auto partial = ot::recognizeTrack(inkSchematic(true, false, true), manual);
+    const auto partialPasses = passagesFor(partial.document, QStringLiteral("triple"));
+    check(partialPasses.size() < 3,
+          "a compound symbol alone cannot invent unseen internal window passages");
+    const QImage maneuverImage = inkSchematic(true);
+    for (const double factor : {.75, 1.5}) {
+        const auto resized =
+            ot::recognizeTrack(maneuverImage.scaled(int(maneuverImage.width() * factor),
+                                                    int(maneuverImage.height() * factor),
+                                                    Qt::KeepAspectRatio, Qt::SmoothTransformation),
+                               manual);
+        check(resized.detectedCount == 10,
+              "resampling a schematic preserves its physical component count");
+        check(passagesFor(resized.document, "triple").size() == 3 &&
+                  passagesFor(resized.document, "ladder").size() == 2,
+              "resampling and antialias fragments preserve observed compound passages");
+    }
+    QString roundtripError;
+    ot::TrackDocument restored;
+    check(ot::fromJson(ot::toJson(maneuvers.document), &restored, &roundtripError) &&
+              restored.routeSteps.size() == maneuvers.document.routeSteps.size(),
+          "physical components, repeated passages and guides survive project serialization");
 
     std::cout << (failures ? "Recognizer tests FAILED\n" : "Recognizer tests passed\n");
     return failures ? 1 : 0;

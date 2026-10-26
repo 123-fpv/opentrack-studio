@@ -8,8 +8,10 @@ namespace ot {
 
 // Local recognition of schematic symbols. Dark outlined plans with a magenta
 // racing line use obstacle shapes and the drawn route graph, including compound
-// and edge-on gates. Blue-icon plans retain the simple detector below. Heights,
-// compound internal passes and any unreadable route require human review;
+// and edge-on gates. Original line samples inside symbols determine repeated
+// aperture passes; occlusion continuation and 3D turn depth remain estimates.
+// Blue-icon plans retain the simple detector below. Heights and unreadable or
+// ambiguous passages require human review; no missing cells are filled by type.
 // arbitrary photographs are outside this local recognizer's scope.
 struct RecognitionOptions {
     double metersPerPixel = 0.05;
