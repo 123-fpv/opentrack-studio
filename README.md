@@ -10,7 +10,7 @@
 
 ## 当前功能
 
-- 默认打开可编辑的 3D 场景，可旋转视角、平移、缩放，也可切换到俯视图。
+- 黑白高对比界面，内置操作说明；默认打开可编辑的 3D 场景，可旋转视角、平移、缩放，也可切换到俯视图。
 - 导入图片后自动在本地识别门架，生成可撤销、可修改的赛道草稿。
 - 可选实拍/航拍 AI 草稿：最多选择 8 张照片，补充已知门宽及起点、方向、门序说明，预览确认后再应用。
 - 在场景中摆放、选择、拖动、旋转门架，调整尺寸和中心高度。
@@ -19,7 +19,7 @@
 - 将完整工程保存为 `.otproj`，底图随工程嵌入。
 - 导入、导出 VelociDrone `.trk`；新建赛道支持标准门、起终点门和转向柱。
 
-本地符号识别面向清晰、平整的赛道设计图。照片、透视图和包含完整软件界面的截图，可能产生漏检或误检；建议先裁出赛道区域。图片通常无法确定真实高度、门架方向及交叉处的通过顺序，这些参数需要校对。详细操作见 [使用说明](docs/usage.md)。
+本地符号识别面向清晰、平整的赛道设计图。照片、透视图和包含完整软件界面的截图，可能产生漏检或误检；建议先裁出赛道区域。图片通常无法确定真实高度、门架方向及交叉处的通过顺序，这些参数需要校对。第一次使用可先看 [快速上手](docs/quickstart.md)，更多设置见 [使用说明](docs/usage.md)。
 
 实拍 AI 功能使用固定官方端点 `https://api.deepseek.com` 和 `deepseek-flash` 模型，需要用户自己的 API 密钥；可选择保存到 Windows 凭据管理器。只有明确点击生成才发送缩放后的照片，生成后先预览，再决定是否应用。已知尺寸、视角重叠和清楚的飞行顺序说明有助于生成草稿；结果仍需校对，不属于测绘或摄影测量重建。
 
@@ -65,4 +65,4 @@ OpenTrack Studio is a C++/Qt desktop editor for FPV race layouts. Importing an o
 
 An optional photograph workflow accepts up to 8 images and generates a draft through the official DeepSeek API using the user's API key. Images are sent only after an explicit Generate action; the draft is previewed before applying and remains undoable. A known gate width and overlapping views help scale/layout estimates, but the result requires review and is not surveying or photogrammetry. Local blue-symbol recognition remains offline.
 
-This is an early implementation. Image recognition requires suitable overhead drawings; height, heading, scale and checkpoint order require review. New native exports support standard/start gates and flags. Actual loading and flying in the installed simulator have not yet been verified, and physical dimensions need calibration. See the [usage guide](docs/usage.md), [format notes](docs/format.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Application source is MIT licensed; Qt is dynamically linked under its applicable open-source licenses.
+This is an early implementation. Image recognition requires suitable overhead drawings; height, heading, scale and checkpoint order require review. New native exports support standard/start gates and stretched-block turning pillars. Actual loading and flying in the installed simulator have not yet been verified, and physical dimensions need calibration. See the [usage guide](docs/usage.md), [format notes](docs/format.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Application source is MIT licensed; Qt is dynamically linked under its applicable open-source licenses.

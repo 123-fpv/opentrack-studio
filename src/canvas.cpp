@@ -20,33 +20,34 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
     p->setRenderHint(QPainter::Antialiasing);
     p->translate(b.center());
     p->scale(b.width() / 64., b.height() / 56.);
-    const QColor c = type == "start"    ? QColor("#0caa8c")
-                     : type == "pillar" ? QColor("#4f91d9")
-                     : type == "flag"   ? QColor("#eb9a2b")
-                                        : tint;
+    const int neutralTint = qGray(tint.rgb());
+    const QColor c = type == "start"    ? QColor("#292929")
+                     : type == "pillar" ? QColor("#555555")
+                     : type == "flag"   ? QColor("#7b7b7b")
+                                        : QColor(neutralTint, neutralTint, neutralTint);
     if (selected) {
-        p->setPen(QPen(QColor(37, 119, 237, 85), 1.2, Qt::DashLine));
-        p->setBrush(QColor(37, 119, 237, 12));
+        p->setPen(QPen(QColor(25, 25, 25, 175), 1.2, Qt::DashLine));
+        p->setBrush(QColor(255, 255, 255, 170));
         p->drawRoundedRect(QRectF(-31, -27, 62, 54), 6, 6);
     }
     p->setPen(Qt::NoPen);
-    p->setBrush(QColor(31, 57, 93, 22));
+    p->setBrush(QColor(35, 35, 35, 12));
     p->drawEllipse(QRectF(-25, 17, 52, 9));
     if (type == "pillar") {
         // A solid square post, with the same silhouette as a stretched native cube.
         p->setPen(QPen(c, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p->setBrush(QColor("#202b37"));
+        p->setBrush(QColor("#252525"));
         p->drawPolygon(
             QPolygonF({QPointF(6, -22), QPointF(13, -26), QPointF(13, 17), QPointF(6, 21)}));
-        p->setBrush(QColor("#566578"));
+        p->setBrush(QColor("#666666"));
         p->drawPolygon(
             QPolygonF({QPointF(-8, -22), QPointF(-1, -26), QPointF(13, -26), QPointF(6, -22)}));
-        p->setBrush(QColor("#303945"));
+        p->setBrush(QColor("#373737"));
         p->drawRect(QRectF(-8, -22, 14, 43));
-        p->setPen(QPen(QColor("#8498ae"), 1.4, Qt::SolidLine, Qt::RoundCap));
+        p->setPen(QPen(QColor("#8f8f8f"), 1.4, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(QPointF(-11, 23), QPointF(16, 23));
     } else if (type == "flag") {
-        p->setPen(QPen(QColor("#52657c"), 2.6, Qt::SolidLine, Qt::RoundCap));
+        p->setPen(QPen(QColor("#555555"), 2.6, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(QPointF(-5, 21), QPointF(-5, -22));
         QPainterPath f;
         f.moveTo(-4, -21);
@@ -114,14 +115,14 @@ class GateItem final : public QGraphicsObject {
             p->translate(0, -.25);
             p->scale(radius, 2.1);
             QRadialGradient glow(QPointF(0, 0), 1.0);
-            glow.setColorAt(0, QColor(44, 161, 255, 0));
-            glow.setColorAt(.64, QColor(44, 161, 255, 0));
-            glow.setColorAt(.83, QColor(44, 161, 255, 55));
-            glow.setColorAt(1, QColor(44, 161, 255, 0));
+            glow.setColorAt(0, QColor(255, 255, 255, 0));
+            glow.setColorAt(.64, QColor(255, 255, 255, 0));
+            glow.setColorAt(.83, QColor(255, 255, 255, 200));
+            glow.setColorAt(1, QColor(255, 255, 255, 0));
             p->setPen(Qt::NoPen);
             p->setBrush(glow);
             p->drawEllipse(QPointF(0, 0), 1, 1);
-            QPen ring(QColor(30, 145, 248, 190), 1.5);
+            QPen ring(QColor(22, 22, 22, 220), 1.5);
             ring.setCosmetic(true);
             p->setPen(ring);
             p->setBrush(Qt::NoBrush);
@@ -130,21 +131,23 @@ class GateItem final : public QGraphicsObject {
         }
         const double w = std::max(1.6, gate.width);
         paintGateSymbol(p, QRectF(-w * .65, -1.8, w * 1.3, 2.9), gate.type, isSelected());
-        p->setPen(QPen(gate.type == "start" ? QColor("#0caa8c") : QColor("#537aa3"), .07,
-                       Qt::SolidLine, Qt::RoundCap));
+        p->setPen(QPen(isSelected()
+                           ? QColor("#222222")
+                           : (gate.type == "start" ? QColor("#333333") : QColor("#7a7a7a")),
+                       .07, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(QPointF(0, 1.2), QPointF(0, 1.8));
         p->drawLine(QPointF(0, 1.8), QPointF(-.19, 1.57));
         p->drawLine(QPointF(0, 1.8), QPointF(.19, 1.57));
         p->save();
         p->rotate(gate.yaw);
-        p->setBrush(isSelected() ? QColor("#2577ed") : QColor("#ffffff"));
-        p->setPen(QPen(QColor("#d6e2ef"), .06));
+        p->setBrush(isSelected() ? QColor("#222222") : QColor("#ffffff"));
+        p->setPen(QPen(QColor("#bfbfbf"), .06));
         p->drawRoundedRect(QRectF(-.48, -.43, .96, .86), .26, .26);
         QFont f("Segoe UI");
         f.setPixelSize(12);
         p->setFont(f);
         p->scale(.07, .07);
-        p->setPen(isSelected() ? Qt::white : QColor("#304b6d"));
+        p->setPen(isSelected() ? Qt::white : QColor("#333333"));
         p->drawText(QRectF(-6.7, -6, 13.4, 12), Qt::AlignCenter, QString::number(ordinal + 1));
         p->restore();
     }
@@ -260,7 +263,7 @@ void TrackCanvas::rebuild() {
             image->setOpacity(doc_->backgroundOpacity);
             image->setZValue(-20);
         }
-        route_ = scene_->addPath(QPainterPath(), QPen(QColor("#e7ac46"), .12, Qt::SolidLine,
+        route_ = scene_->addPath(QPainterPath(), QPen(QColor("#606060"), .12, Qt::SolidLine,
                                                       Qt::RoundCap, Qt::RoundJoin));
         route_->setZValue(-1);
         for (int i = 0; i < doc_->gates.size(); ++i) {
@@ -271,7 +274,7 @@ void TrackCanvas::rebuild() {
                 item->setSelected(true);
         }
         drone_ = scene_->addEllipse(QRectF(-.3, -.3, .6, .6), QPen(Qt::white, .12),
-                                    QBrush(QColor("#e5683f")));
+                                    QBrush(QColor("#333333")));
         drone_->setZValue(30);
         drone_->setVisible(timer_.isActive());
     }
@@ -371,16 +374,16 @@ QImage TrackCanvas::exportImage() const {
     return img;
 }
 void TrackCanvas::drawBackground(QPainter *p, const QRectF &r) {
-    p->fillRect(r, QColor("#f8fbfe"));
+    p->fillRect(r, QColor("#f7f7f7"));
     const double step = (transform().m11() < 5) ? 5 : 1;
-    auto pen = QPen(QColor("#e8eef5"));
+    auto pen = QPen(QColor("#e5e5e5"));
     pen.setCosmetic(true);
     p->setPen(pen);
     for (double x = std::floor(r.left() / step) * step; x < r.right(); x += step)
         p->drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
     for (double y = std::floor(r.top() / step) * step; y < r.bottom(); y += step)
         p->drawLine(QPointF(r.left(), y), QPointF(r.right(), y));
-    pen.setColor(QColor("#d6e1ee"));
+    pen.setColor(QColor("#cecece"));
     p->setPen(pen);
     for (double x = std::floor(r.left() / 10) * 10; x < r.right(); x += 10)
         p->drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()));
@@ -390,7 +393,7 @@ void TrackCanvas::drawBackground(QPainter *p, const QRectF &r) {
 void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
     p->save();
     p->resetTransform();
-    p->setPen(QColor("#7b8da4"));
+    p->setPen(QColor("#666666"));
     QFont f("Microsoft YaHei UI", 9);
     p->setFont(f);
     p->drawText(QRectF(20, viewport()->height() - 36, 470, 22), Qt::AlignLeft | Qt::AlignVCenter,
@@ -408,7 +411,7 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
                                                           : 1.);
         const double barPixels = length * ppm;
         const double x = viewport()->width() - 24 - barPixels, y = viewport()->height() - 28;
-        p->setPen(QPen(QColor("#647c99"), 2));
+        p->setPen(QPen(QColor("#444444"), 2));
         p->drawLine(QPointF(x, y), QPointF(x + barPixels, y));
         p->drawLine(QPointF(x, y - 4), QPointF(x, y + 4));
         p->drawLine(QPointF(x + barPixels, y - 4), QPointF(x + barPixels, y + 4));

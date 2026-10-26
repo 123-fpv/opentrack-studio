@@ -2,4 +2,7 @@
   <qresource prefix="/icons">
     <file alias="app.png">app-icon.png</file>
   </qresource>
+  <qresource prefix="/theme">
+    <file alias="studio.qss">studio.qss</file>
+  </qresource>
 </RCC>

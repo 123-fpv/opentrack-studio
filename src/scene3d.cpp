@@ -125,25 +125,25 @@ void frame(Batch &batch, const Gate &gate, float depth, const QColor &color) {
 
 void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
     const float w = static_cast<float>(gate.width), h = static_cast<float>(gate.height);
-    const QColor blue = selected ? QColor("#1867d9") : QColor("#3985ed");
-    const QColor color = gate.type == QStringLiteral("start") ? QColor("#13a98e") : blue;
+    const QColor frameColor = selected ? QColor("#151515") : QColor("#4b4b4b");
+    const QColor color = gate.type == QStringLiteral("start") ? QColor("#292929") : frameColor;
     if (gate.type == QStringLiteral("pillar")) {
         // A stretched native black cube: no openings, flag cloth or decorative geometry.
-        box(batch, gate, {0, 0, 0}, {w, h, w}, selected ? QColor("#2b465e") : QColor("#343b45"));
+        box(batch, gate, {0, 0, 0}, {w, h, w}, selected ? QColor("#161616") : QColor("#303030"));
         return;
     }
     if (gate.type == QStringLiteral("flag")) {
-        box(batch, gate, {0, 0, 0}, {.065f, h, .065f}, QColor("#47566b"));
-        box(batch, gate, {0, -h / 2 + .045f, 0}, {.46f, .09f, .46f}, QColor("#8496ac"));
+        box(batch, gate, {0, 0, 0}, {.065f, h, .065f}, QColor("#484848"));
+        box(batch, gate, {0, -h / 2 + .045f, 0}, {.46f, .09f, .46f}, QColor("#939393"));
         const auto a = gatePoint(gate, {.04f, h / 2 - .03f, 0});
         const auto b = gatePoint(gate, {w * .42f, h / 2 - h * .13f, .07f});
         const auto c = gatePoint(gate, {w * .34f, h / 2 - h * .50f, .03f});
         const auto d = gatePoint(gate, {.04f, h / 2 - h * .42f, 0});
-        quad(batch, a, b, c, d, QColor("#f5aa38"));
+        quad(batch, a, b, c, d, QColor("#858585"));
         const auto a2 = gatePoint(gate, {.08f, h / 2 - h * .17f, .012f});
         const auto b2 = gatePoint(gate, {w * .29f, h / 2 - h * .23f, .06f});
         const auto c2 = gatePoint(gate, {.08f, h / 2 - h * .24f, .012f});
-        triangle(batch, a2, b2, c2, QColor("#fff1cf"));
+        triangle(batch, a2, b2, c2, QColor("#f4f4f4"));
         return;
     }
     const bool cube = gate.type == QStringLiteral("cube");
@@ -163,11 +163,11 @@ void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
         const float tile = w / static_cast<float>(squares);
         for (int i = 0; i < squares; ++i)
             box(batch, gate, {-w / 2 + tile * (static_cast<float>(i) + .5f), h / 2, .007f},
-                {tile * .97f, .19f, .12f}, i % 2 ? QColor("#f5fffe") : QColor("#174e4d"));
+                {tile * .97f, .19f, .12f}, i % 2 ? QColor("#f5f5f5") : QColor("#171717"));
     } else {
         // Small white corner sleeves make the opening legible at oblique angles.
         for (const float x : {-w / 2, w / 2})
-            box(batch, gate, {x, h / 2 - .13f, .007f}, {.12f, .22f, .12f}, QColor("#d9eaff"));
+            box(batch, gate, {x, h / 2 - .13f, .007f}, {.12f, .22f, .12f}, QColor("#e5e5e5"));
     }
 }
 
@@ -217,9 +217,9 @@ class FallbackCanvas final : public QWidget {
 struct Scene3D::Impl {
     explicit Impl(Scene3D *owner) : q(owner) {
         grid.mode = routeLine.mode = projection.mode = selection.mode = GL_LINES;
-        shadows.opacity = .10f;
+        shadows.opacity = .05f;
         projection.opacity = .44f;
-        halo.opacity = .20f;
+        halo.opacity = .72f;
         fallback = new FallbackCanvas(q);
         fallback->hide();
         fallback->draw = [this](QPainter &painter) { paintSoftware(painter); };
@@ -459,7 +459,7 @@ struct Scene3D::Impl {
         const float z0 = static_cast<float>(groundBounds.top()),
                     z1 = static_cast<float>(groundBounds.bottom());
         quad(ground, {x0, -.045f, z0}, {x1, -.045f, z0}, {x1, -.045f, z1}, {x0, -.045f, z1},
-             QColor("#eef3f9"));
+             QColor("#ededed"));
         double step = document ? std::max(.05, document->gridSize) : 1;
         while (groundBounds.width() / step + groundBounds.height() / step > 600)
             step *= 2;
@@ -468,14 +468,14 @@ struct Scene3D::Impl {
         for (double x = beginX; x <= groundBounds.right(); x += step) {
             const bool major = std::abs(std::remainder(x / step, 5.0)) < .001;
             line(grid, {static_cast<float>(x), .005f, z0}, {static_cast<float>(x), .005f, z1},
-                 major ? QColor("#d1dcea") : QColor("#e0e7f0"));
+                 major ? QColor("#c9c9c9") : QColor("#dedede"));
         }
         for (double z = beginZ; z <= groundBounds.bottom(); z += step) {
             const bool major = std::abs(std::remainder(z / step, 5.0)) < .001;
             line(grid, {x0, .005f, static_cast<float>(z)}, {x1, .005f, static_cast<float>(z)},
-                 major ? QColor("#d1dcea") : QColor("#e0e7f0"));
+                 major ? QColor("#c9c9c9") : QColor("#dedede"));
         }
-        const QColor border("#c4d3e5");
+        const QColor border("#bcbcbc");
         line(grid, {x0, .01f, z0}, {x1, .01f, z0}, border);
         line(grid, {x1, .01f, z0}, {x1, .01f, z1}, border);
         line(grid, {x1, .01f, z1}, {x0, .01f, z1}, border);
@@ -494,7 +494,7 @@ struct Scene3D::Impl {
                                                 static_cast<float>(std::sin(a)) * .55f),
                              center + QVector3D(static_cast<float>(std::cos(b)) * w, 0,
                                                 static_cast<float>(std::sin(b)) * .55f),
-                             QColor("#2c486d"));
+                             QColor("#333333"));
                 }
                 const float a = static_cast<float>(item.yaw * Pi / 180);
                 const QVector3D direction(std::sin(a), 0, std::cos(a));
@@ -503,7 +503,7 @@ struct Scene3D::Impl {
                 const QVector3D arrowBase(static_cast<float>(passage.x()), .04f,
                                           static_cast<float>(passage.y()));
                 const QColor arrowColor =
-                    item.id == selected ? QColor("#1968d9") : QColor("#91b5df");
+                    item.id == selected ? QColor("#222222") : QColor("#969696");
                 triangle(solids, arrowBase + direction * 1.15f,
                          arrowBase + direction * .65f + side * .19f,
                          arrowBase + direction * .65f - side * .19f, arrowColor);
@@ -514,7 +514,7 @@ struct Scene3D::Impl {
                     const auto b0 = gatePoint(item, {halfW, -halfH, -.015f});
                     const auto c0 = gatePoint(item, {halfW, halfH, -.015f});
                     const auto d0 = gatePoint(item, {-halfW, halfH, -.015f});
-                    const QColor selectionColor("#249aff");
+                    const QColor selectionColor("#161616");
                     line(selection, a0, b0, selectionColor);
                     line(selection, b0, c0, selectionColor);
                     line(selection, c0, d0, selectionColor);
@@ -522,7 +522,7 @@ struct Scene3D::Impl {
                     line(selection,
                          {static_cast<float>(item.position.x()), .03f,
                           static_cast<float>(item.position.y())},
-                         point3(item), QColor("#8aa4c3"));
+                         point3(item), QColor("#8f8f8f"));
                     const float haloRadius = selectionHaloRadius(item);
                     const QVector3D base(static_cast<float>(item.position.x()), .055f,
                                          static_cast<float>(item.position.y()));
@@ -534,9 +534,9 @@ struct Scene3D::Impl {
                         quad(halo, base + directionA * haloRadius * .86f,
                              base + directionB * haloRadius * .86f,
                              base + directionB * haloRadius * 1.16f,
-                             base + directionA * haloRadius * 1.16f, QColor("#36b8ff"));
+                             base + directionA * haloRadius * 1.16f, QColor("#ffffff"));
                         line(selection, base + directionA * haloRadius,
-                             base + directionB * haloRadius, QColor("#249aff"));
+                             base + directionB * haloRadius, QColor("#161616"));
                     }
                 }
             }
@@ -572,10 +572,10 @@ struct Scene3D::Impl {
                     const auto a = route[i - 1], b = route[i];
                     length += (b - a).length();
                     routeLengths.push_back(length);
-                    tube(routeTube, a, b, .035f, QColor("#dca344"));
-                    line(routeLine, a, b, QColor("#e0a547"));
+                    tube(routeTube, a, b, .035f, QColor("#626262"));
+                    line(routeLine, a, b, QColor("#595959"));
                     line(projection, {a.x(), .025f, a.z()}, {b.x(), .025f, b.z()},
-                         QColor("#d2ad6c"));
+                         QColor("#9e9e9e"));
                 }
             }
         }
@@ -651,17 +651,17 @@ struct Scene3D::Impl {
                 const bool active = item.id == selected;
                 const double badgeWidth = i >= 99 ? 25 : 19;
                 const QRectF badge(point.x() - badgeWidth / 2, point.y() - 8, badgeWidth, 16);
-                painter.setPen(QPen(active ? QColor("#236fdf") : QColor("#c6d5e8"), 1));
-                painter.setBrush(active ? QColor("#2675e5") : QColor(255, 255, 255, 238));
+                painter.setPen(QPen(active ? QColor("#111111") : QColor("#bfbfbf"), 1));
+                painter.setBrush(active ? QColor("#222222") : QColor(255, 255, 255, 238));
                 painter.drawRoundedRect(badge, 5, 5);
-                painter.setPen(active ? Qt::white : QColor("#425f81"));
+                painter.setPen(active ? Qt::white : QColor("#303030"));
                 painter.drawText(badge, Qt::AlignCenter, QString::number(i + 1));
             }
         }
         painter.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 9));
         const QString title =
             software ? QStringLiteral("透视预览 · 硬件加速不可用") : QStringLiteral("3D 透视视图");
-        painter.setPen(QColor("#4b6583"));
+        painter.setPen(QColor("#333333"));
         painter.setBrush(QColor(255, 255, 255, 222));
         painter.drawRoundedRect(QRectF(16, 15, software ? 215 : 123, 31), 10, 10);
         painter.drawText(QRectF(27, 15, software ? 200 : 105, 31), Qt::AlignVCenter | Qt::AlignLeft,
@@ -673,14 +673,14 @@ struct Scene3D::Impl {
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor(255, 255, 255, 226));
         painter.drawRoundedRect(hintRect, 9, 9);
-        painter.setPen(QColor("#627b98"));
+        painter.setPen(QColor("#525252"));
         painter.drawText(hintRect.adjusted(11, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft, hint);
         if (timer.isActive()) {
             const QRectF tag(16, 54, 200, 27);
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(255, 245, 226, 240));
+            painter.setBrush(QColor(235, 235, 235, 244));
             painter.drawRoundedRect(tag, 8, 8);
-            painter.setPen(QColor("#9b702b"));
+            painter.setPen(QColor("#3e3e3e"));
             painter.drawText(tag, Qt::AlignCenter,
                              QStringLiteral("几何路线预览 · %1 km/h").arg(qRound(speedKph)));
         }
@@ -695,15 +695,15 @@ struct Scene3D::Impl {
             painter.drawText(QRectF(end.x() - 6, end.y() - 10, 20, 16), Qt::AlignCenter, name);
         };
         painter.setFont(QFont(QStringLiteral("Segoe UI"), 8, QFont::DemiBold));
-        axis({1, 0, 0}, QColor("#dc7e70"), QStringLiteral("X"));
-        axis({0, 1, 0}, QColor("#64a68c"), QStringLiteral("Y"));
-        axis({0, 0, 1}, QColor("#5c91cf"), QStringLiteral("Z"));
+        axis({1, 0, 0}, QColor("#282828"), QStringLiteral("X"));
+        axis({0, 1, 0}, QColor("#777777"), QStringLiteral("Y"));
+        axis({0, 0, 1}, QColor("#a0a0a0"), QStringLiteral("Z"));
     }
 
     void paintSoftware(QPainter &painter) {
         matrices();
         painter.setRenderHint(QPainter::Antialiasing);
-        painter.fillRect(q->rect(), QColor("#f6f9fd"));
+        painter.fillRect(q->rect(), QColor("#fafafa"));
         QPolygonF floor;
         for (const QPointF &p : {groundBounds.topLeft(), groundBounds.topRight(),
                                  groundBounds.bottomRight(), groundBounds.bottomLeft()}) {
@@ -712,8 +712,8 @@ struct Scene3D::Impl {
                 floor.append(screen);
         }
         if (floor.size() == 4) {
-            painter.setPen(QPen(QColor("#cbd9e9"), 1));
-            painter.setBrush(QColor("#eef3f9"));
+            painter.setPen(QPen(QColor("#bcbcbc"), 1));
+            painter.setBrush(QColor("#ededed"));
             painter.drawPolygon(floor);
         }
         if (document && document->showBackground && !document->background.isNull()) {
@@ -778,7 +778,7 @@ struct Scene3D::Impl {
                 ring.addPolygon(inner);
                 ring.closeSubpath();
                 painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(48, 172, 255, 48));
+                painter.setBrush(QColor(255, 255, 255, 184));
                 painter.drawPath(ring);
             }
             drawLines(selection, 1.8);
@@ -844,10 +844,10 @@ struct Scene3D::Impl {
                 if (polygon.size() == 4) {
                     const QColor color =
                         item->type == QStringLiteral("start")
-                            ? QColor("#16a98f")
-                            : (item->type == QStringLiteral("flag") ? QColor("#eca143")
-                                                                    : QColor("#3985ed"));
-                    painter.setPen(QPen(item->id == selected ? QColor("#168fff") : color, 3.2,
+                            ? QColor("#292929")
+                            : (item->type == QStringLiteral("flag") ? QColor("#858585")
+                                                                    : QColor("#4b4b4b"));
+                    painter.setPen(QPen(item->id == selected ? QColor("#151515") : color, 3.2,
                                         Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
                     painter.setBrush(QColor(color.red(), color.green(), color.blue(), 12));
                     painter.drawPolygon(polygon);
@@ -858,7 +858,7 @@ struct Scene3D::Impl {
             QPointF marker;
             if (project(previewPoint(), &marker)) {
                 painter.setPen(QPen(Qt::white, 2));
-                painter.setBrush(QColor("#ed7945"));
+                painter.setBrush(QColor("#333333"));
                 painter.drawEllipse(marker, 6, 6);
             }
         }
@@ -1110,7 +1110,7 @@ void Scene3D::paintGL() {
         return;
     d_->matrices();
     glViewport(0, 0, qRound(width() * devicePixelRatioF()), qRound(height() * devicePixelRatioF()));
-    glClearColor(.965f, .976f, .992f, 1);
+    glClearColor(.98f, .98f, .98f, 1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -1227,9 +1227,9 @@ void Scene3D::paintGL() {
              center + QVector3D(0, 0, -r)}};
         for (int i = 0; i < 4; ++i) {
             triangle(d_->preview, center + QVector3D(0, r, 0), ring[i], ring[(i + 1) % 4],
-                     QColor("#f4874c"));
+                     QColor("#444444"));
             triangle(d_->preview, center - QVector3D(0, r, 0), ring[(i + 1) % 4], ring[i],
-                     QColor("#cc653d"));
+                     QColor("#1f1f1f"));
         }
         d_->preview.buffer.bind();
         d_->preview.buffer.allocate(d_->preview.vertices.data(),

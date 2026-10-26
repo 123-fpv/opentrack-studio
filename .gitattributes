@@ -5,6 +5,7 @@
 *.yml text eol=lf
 *.svg text eol=lf
 *.qrc text eol=lf
+*.qss text eol=lf
 *.rc text eol=lf
 *.otproj text eol=lf
 *.trk -text

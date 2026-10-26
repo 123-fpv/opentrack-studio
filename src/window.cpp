@@ -81,20 +81,20 @@ class GateCard final : public QPushButton {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const bool active = isChecked() || underMouse();
-        p.setBrush(active ? QColor("#edf5ff") : QColor("#ffffff"));
-        p.setPen(QPen(active ? QColor("#7caff4") : QColor("#e4ebf4"), 1));
-        p.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 9, 9);
+        p.setBrush(active ? QColor("#ededed") : QColor("#ffffff"));
+        p.setPen(QPen(active ? QColor("#242424") : QColor("#c9c9c9"), isChecked() ? 2 : 1));
+        p.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 3, 3);
         paintGateSymbol(&p, QRectF(width() / 2. - 28, 7, 56, 48), type_);
         QFont f = font();
         f.setPointSize(9);
         f.setWeight(QFont::DemiBold);
         p.setFont(f);
-        p.setPen(QColor("#263f60"));
+        p.setPen(QColor("#222222"));
         p.drawText(QRect(0, 64, width(), 18), Qt::AlignCenter, title_);
         f.setWeight(QFont::Normal);
         f.setPointSize(8);
         p.setFont(f);
-        p.setPen(QColor("#8a9bb0"));
+        p.setPen(QColor("#707070"));
         p.drawText(QRect(0, 83, width(), 15), Qt::AlignCenter, subtitle_);
     }
 };
@@ -107,7 +107,8 @@ StudioWindow::StudioWindow() {
     canvas_->setDocument(&doc_);
     applyDocument(doc_);
     undo_.setClean();
-    setWindowTitle(QStringLiteral("OpenTrack Studio — VelociDrone 赛道工作台"));
+    setWindowTitle(QString("OpenTrack Studio %1 — VelociDrone 赛道工作台")
+                       .arg(QCoreApplication::applicationVersion()));
     setMinimumSize(1140, 740);
     const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
     resize(std::min(1480, available.width() - 40), std::min(900, available.height() - 65));
@@ -119,7 +120,7 @@ StudioWindow::StudioWindow() {
 StudioWindow::~StudioWindow() {
     // Members are destroyed before QObject destroys its child widgets. Remove
     // their callbacks while the document and undo stack are still alive.
-    for (auto* child : findChildren<QObject*>())
+    for (auto *child : findChildren<QObject *>())
         QObject::disconnect(child, nullptr, this, nullptr);
     canvas_->onSelection = {};
     canvas_->onGateMoved = {};
@@ -171,7 +172,7 @@ void StudioWindow::setupUi() {
     auto *planAction = importMenu->addAction("平面赛道图 · 本地识别");
     auto *photoAction = importMenu->addAction("实拍 / 航拍照片 · AI 生成");
     imp->setMenu(importMenu);
-    auto *exp = button("导出到 VelociDrone  ↗", "primary");
+    auto *exp = button("导出赛道 .trk  ↗", "primary");
     hl->addWidget(imp);
     hl->addWidget(exp);
     connect(planAction, &QAction::triggered, this, [this] { importImage(); });
@@ -193,7 +194,7 @@ void StudioWindow::setupUi() {
     };
     tool("新建", "Ctrl+N", [this] { newProject(); });
     tool("打开", "Ctrl+O", [this] { openProject(); });
-    tool("保存", "Ctrl+S", [this] { save(); });
+    tool("保存工程", "Ctrl+S", [this] { save(); });
     tl->addSpacing(12);
     auto *undo = tool("↶  撤销", "Ctrl+Z", [this] { undo_.undo(); });
     auto *redo = tool("↷  重做", "Ctrl+Shift+Z", [this] { undo_.redo(); });
@@ -224,6 +225,21 @@ void StudioWindow::setupUi() {
     });
     tl->addSpacing(10);
     tool("适应视角", "F", [this] { fitViews(); });
+    tool("操作说明", "快速上手", [this] {
+        QMessageBox help(this);
+        help.setWindowTitle("OpenTrack Studio · 操作说明");
+        help.setTextFormat(Qt::PlainText);
+        help.setText(
+            "① 查看赛道\n右键旋转视角，中键平移，滚轮缩放；F 显示整条赛道。\n\n"
+            "② 移动组件\n先单击并松开，看到光圈后，再按住组件或脚下光圈拖动。\n"
+            "左侧修改尺寸、高度、朝向；转向柱可选择左右绕行。\n\n"
+            "③ 从图片生成\n平面赛道图在本地识别；实拍、航拍照片使用 AI 生成草稿，预览后应用。\n\n"
+            "④ 保存和使用\n保存工程得到 .otproj，方便继续编辑。\n"
+            "导出赛道得到 .trk，在 VelociDrone 的 Track Editor → Import Track 中导入。\n\n"
+            "Ctrl+Z 撤销 · Ctrl+D 复制 · Delete 删除 · Q/E 旋转组件");
+        help.setStandardButtons(QMessageBox::Ok);
+        help.exec();
+    });
     all->addWidget(tools);
     auto *main = new QSplitter(Qt::Horizontal);
     main->setHandleWidth(1);
@@ -276,13 +292,13 @@ void StudioWindow::setupUi() {
     ll->addWidget(stats);
     ll->addWidget(line());
     ll->addWidget(label("图片生成赛道", "sectionTitle"));
-    auto *import = button("＋  平面赛道图", "secondary");
+    auto *import = button("导入平面图并识别", "secondary");
     ll->addWidget(import);
     connect(import, &QPushButton::clicked, this, [this] { importImage(); });
     imageStatus_ = label("支持 PNG / JPG / BMP\n请使用蓝色门架符号的俯视图", "subtle");
     imageStatus_->setWordWrap(true);
     ll->addWidget(imageStatus_);
-    auto *aiPhotos = button("实拍 / 航拍 · AI 生成", "secondary");
+    auto *aiPhotos = button("照片生成赛道（AI）", "secondary");
     ll->addWidget(aiPhotos);
     connect(aiPhotos, &QPushButton::clicked, this, [this] { importPhotosWithAi(); });
     auto *advancedToggle = button("比例与底图设置  ▸", "tool");
@@ -648,7 +664,8 @@ void StudioWindow::applyDocument(const TrackDocument &d) {
     updateStats();
     canvas_->selectGate(selected_);
     updateSelection(selected_);
-    setWindowTitle("OpenTrack Studio — " + doc_.name + "[*]");
+    setWindowTitle("OpenTrack Studio " + QCoreApplication::applicationVersion() + " — " +
+                   doc_.name + "[*]");
 }
 void StudioWindow::edit(const QString &title, const std::function<void(TrackDocument &)> &change) {
     auto after = doc_;
@@ -701,6 +718,12 @@ void StudioWindow::updateSelection(const QString &id) {
     }
     order_->setCurrentRow(row);
     updating_ = false;
+    statusBar()->showMessage(
+        gate
+            ? QString("已选中 #%1 %2 · 再次按住组件或脚下光圈可移动 · Q/E 旋转")
+                  .arg(row + 1)
+                  .arg(gateTypeName(gate->type))
+            : QString("先单击组件选中，再按住组件或光圈拖动 · 右键旋转视角 · 中键平移 · 滚轮缩放"));
 }
 void StudioWindow::editSelection() {
     if (updating_ || selected_.isEmpty())
