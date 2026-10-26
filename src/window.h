@@ -35,7 +35,10 @@ class StudioWindow : public QMainWindow {
     QLineEdit *name_ = nullptr;
     QComboBox *scenery_ = nullptr;
     QComboBox *passSide_ = nullptr;
+    QComboBox *color_ = nullptr;
     QLabel *passSideLabel_ = nullptr;
+    QLabel *widthLabel_ = nullptr, *heightLabel_ = nullptr, *dimensions_ = nullptr,
+           *colorMapping_ = nullptr;
     QLabel *gateCount_ = nullptr, *length_ = nullptr, *zoom_ = nullptr, *selectionTitle_ = nullptr,
            *imageStatus_ = nullptr, *notice_ = nullptr;
     QListWidget *order_ = nullptr;
@@ -57,6 +60,7 @@ class StudioWindow : public QMainWindow {
     void updateStats();
     void updateSelection(const QString &id);
     void editSelection();
+    void editColor(const QColor &color);
     void addGate(const QString &type, QPointF pos, double w, double h);
     void duplicateGate();
     void deleteGate();

@@ -20,11 +20,7 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
     p->setRenderHint(QPainter::Antialiasing);
     p->translate(b.center());
     p->scale(b.width() / 64., b.height() / 56.);
-    const int neutralTint = qGray(tint.rgb());
-    const QColor c = type == "start"    ? QColor("#292929")
-                     : type == "pillar" ? QColor("#555555")
-                     : type == "flag"   ? QColor("#7b7b7b")
-                                        : QColor(neutralTint, neutralTint, neutralTint);
+    const QColor c = tint;
     if (selected) {
         p->setPen(QPen(QColor(25, 25, 25, 175), 1.2, Qt::DashLine));
         p->setBrush(QColor(255, 255, 255, 170));
@@ -32,20 +28,20 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
     }
     p->setPen(Qt::NoPen);
     p->setBrush(QColor(35, 35, 35, 12));
-    p->drawEllipse(QRectF(-25, 17, 52, 9));
+    p->drawEllipse(type == "pillar" ? QRectF(-6, 19, 12, 4) : QRectF(-25, 17, 52, 9));
     if (type == "pillar") {
         // A solid square post, with the same silhouette as a stretched native cube.
         p->setPen(QPen(c, 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p->setBrush(QColor("#252525"));
-        p->drawPolygon(
-            QPolygonF({QPointF(6, -22), QPointF(13, -26), QPointF(13, 17), QPointF(6, 21)}));
-        p->setBrush(QColor("#666666"));
-        p->drawPolygon(
-            QPolygonF({QPointF(-8, -22), QPointF(-1, -26), QPointF(13, -26), QPointF(6, -22)}));
-        p->setBrush(QColor("#373737"));
-        p->drawRect(QRectF(-8, -22, 14, 43));
+        p->setBrush(c.darker(130));
+        p->drawPolygon(QPolygonF(
+            {QPointF(1.4, -22), QPointF(2.7, -23.8), QPointF(2.7, 19.2), QPointF(1.4, 21)}));
+        p->setBrush(c.lighter(150));
+        p->drawPolygon(QPolygonF(
+            {QPointF(-1.4, -22), QPointF(-.1, -23.8), QPointF(2.7, -23.8), QPointF(1.4, -22)}));
+        p->setBrush(c);
+        p->drawRect(QRectF(-1.4, -22, 2.8, 43));
         p->setPen(QPen(QColor("#8f8f8f"), 1.4, Qt::SolidLine, Qt::RoundCap));
-        p->drawLine(QPointF(-11, 23), QPointF(16, 23));
+        p->drawLine(QPointF(-4, 23), QPointF(4, 23));
     } else if (type == "flag") {
         p->setPen(QPen(QColor("#555555"), 2.6, Qt::SolidLine, Qt::RoundCap));
         p->drawLine(QPointF(-5, 21), QPointF(-5, -22));
@@ -130,7 +126,8 @@ class GateItem final : public QGraphicsObject {
             p->restore();
         }
         const double w = std::max(1.6, gate.width);
-        paintGateSymbol(p, QRectF(-w * .65, -1.8, w * 1.3, 2.9), gate.type, isSelected());
+        paintGateSymbol(p, QRectF(-w * .65, -1.8, w * 1.3, 2.9), gate.type, isSelected(),
+                        gateColor(gate));
         p->setPen(QPen(isSelected()
                            ? QColor("#222222")
                            : (gate.type == "start" ? QColor("#333333") : QColor("#7a7a7a")),

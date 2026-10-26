@@ -108,6 +108,12 @@ int main(int argc, char **argv) {
     check(!parsed.warnings.isEmpty(), "AI geometry is always accompanied by review warnings");
     check(parsed.document.extra.value("aiVision").toObject().value("reviewRequired").toBool(),
           "draft metadata marks human review mandatory");
+    check(settings.knownGateWidth == 3.0,
+          "AI scale reference defaults to confirmed 3m frame centreline spacing");
+    if (!parsed.document.gates.isEmpty())
+        check(parsed.document.gates[0].extra.value("frameGeometry").toString() == "centerline-v1",
+              "new AI frames use accurate beam geometry while retaining explicit supplied "
+              "dimensions");
     auto pillarDraft = draft();
     auto pillarTrack = pillarDraft["track"].toObject();
     auto pillar = gate(4, 8, 45);
@@ -129,6 +135,20 @@ int main(int argc, char **argv) {
         check(post.extra.value("passSide").toInt() == -1,
               "provided left passing side is preserved independently of physical column position");
     }
+    auto thinPillar = pillar;
+    thinPillar["width"] = 0.1;
+    thinPillar["height"] = 3.2;
+    thinPillar["elevation"] = 1.6;
+    auto thinTrack = pillarTrack;
+    thinTrack["gates"] = QJsonArray{thinPillar};
+    auto thinDraft = pillarDraft;
+    thinDraft["track"] = thinTrack;
+    const auto thinResult = ot::parseVisionResponse(response(thinDraft), settings);
+    check(thinResult.ok && thinResult.document.gates.size() == 1 &&
+              thinResult.document.gates[0].width == 0.1 &&
+              thinResult.document.gates[0].height == 3.2 &&
+              thinResult.document.gates[0].elevation == 1.6,
+          "confirmed 0.1m pillars are accepted instead of rejected by the old 0.2m gate limit");
     auto invalidSidePillar = pillar;
     invalidSidePillar["passSide"] = 0;
     auto invalidSideDraft = pillarDraft;

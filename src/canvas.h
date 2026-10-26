@@ -8,7 +8,7 @@
 
 namespace ot {
 void paintGateSymbol(QPainter *p, const QRectF &bounds, const QString &type, bool selected = false,
-                     const QColor &tint = QColor("#2577ed"));
+                     const QColor &tint = QColor("#4b4b4b"));
 class GateItem;
 class TrackCanvas : public QGraphicsView {
   public:

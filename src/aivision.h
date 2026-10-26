@@ -13,7 +13,7 @@ struct AiSettings {
     QString baseUrl = QStringLiteral("https://api.deepseek.com");
     QString model = QStringLiteral("deepseek-flash");
     QString apiKey;
-    double knownGateWidth = 2.4; // Reference frame opening, never pillar thickness.
+    double knownGateWidth = 3.0; // Reference frame centreline spacing, never pillar thickness.
     QString notes;
 };
 

@@ -97,6 +97,24 @@ bool extraField(const QJsonObject &object, QJsonObject *output, QString *error) 
     return true;
 }
 
+bool canonicalRgbColor(const QJsonValue &raw, QString *canonical, QString *error) {
+    if (raw.isUndefined())
+        return true;
+    if (!raw.isString())
+        return fail(error, QStringLiteral("组件颜色必须是 #RRGGBB 文本。"));
+    const QString value = raw.toString();
+    if (value.size() != 7 || value[0] != '#')
+        return fail(error, QStringLiteral("组件颜色必须是六位十六进制 #RRGGBB。"));
+    for (int i = 1; i < value.size(); ++i) {
+        const ushort c = value[i].unicode();
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')))
+            return fail(error, QStringLiteral("组件颜色包含无效的十六进制数字。"));
+    }
+    if (canonical)
+        *canonical = value.toUpper();
+    return true;
+}
+
 bool validateDocument(const TrackDocument &document, QString *error) {
     if (document.name.trimmed().isEmpty() || document.name.size() > 4096 ||
         document.scenery.size() > 4096)
@@ -117,6 +135,8 @@ bool validateDocument(const TrackDocument &document, QString *error) {
                     QStringLiteral("底图尺寸过大，最大边长为 16384，最大像素数为 6400 万。"));
     QSet<QString> ids;
     for (const Gate &gate : document.gates) {
+        if (!canonicalRgbColor(gate.extra.value(QStringLiteral("color")), nullptr, error))
+            return false;
         if (gate.id.trimmed().isEmpty() || gate.id.size() > 128 || ids.contains(gate.id))
             return fail(error, QStringLiteral("门架 ID 为空、过长或重复。"));
         ids.insert(gate.id);
@@ -126,6 +146,19 @@ bool validateDocument(const TrackDocument &document, QString *error) {
             !inRange(gate.elevation, -10000.0, 10000.0) || !inRange(gate.width, 0.01, 10000.0) ||
             !inRange(gate.height, 0.01, 10000.0) || !inRange(gate.yaw, -1000000000.0, 1000000000.0))
             return fail(error, QStringLiteral("门架 %1 的类型、尺寸或位置无效。").arg(gate.id));
+        if (gate.extra.value(QStringLiteral("frameGeometry")).toString() ==
+            QStringLiteral("centerline-v1")) {
+            for (const auto &field :
+                 {QStringLiteral("beamThickness"), QStringLiteral("beamOverhang")}) {
+                const auto value = gate.extra.value(field);
+                if (value.isUndefined())
+                    continue;
+                const double minimum = field == QStringLiteral("beamThickness") ? 0.001 : 0.0;
+                if (!value.isDouble() || !inRange(value.toDouble(), minimum, 10000.0))
+                    return fail(error,
+                                QStringLiteral("门架 %1 的梁材参数 %2 无效。").arg(gate.id, field));
+            }
+        }
     }
     return true;
 }
@@ -138,6 +171,11 @@ QJsonArray coordinates(const QPointF &value) {
 QJsonObject toJson(const TrackDocument &document) {
     QJsonArray gates;
     for (const Gate &gate : document.gates) {
+        auto extra = gate.extra;
+        QString color;
+        if (extra.contains(QStringLiteral("color")) &&
+            canonicalRgbColor(extra.value(QStringLiteral("color")), &color, nullptr))
+            extra.insert(QStringLiteral("color"), color);
         gates.append(QJsonObject{{QStringLiteral("id"), gate.id},
                                  {QStringLiteral("type"), gate.type},
                                  {QStringLiteral("position"), coordinates(gate.position)},
@@ -146,7 +184,7 @@ QJsonObject toJson(const TrackDocument &document) {
                                  {QStringLiteral("height"), gate.height},
                                  {QStringLiteral("yaw"), gate.yaw},
                                  {QStringLiteral("label"), gate.label},
-                                 {QStringLiteral("extra"), gate.extra}});
+                                 {QStringLiteral("extra"), extra}});
     }
     QByteArray backgroundPng;
     if (!document.background.isNull()) {
@@ -207,6 +245,12 @@ bool fromJson(const QJsonObject &object, TrackDocument *document, QString *error
                     false) ||
             !extraField(item, &gate.extra, error))
             return false;
+        if (gate.extra.contains(QStringLiteral("color"))) {
+            QString color;
+            if (!canonicalRgbColor(gate.extra.value(QStringLiteral("color")), &color, error))
+                return false;
+            gate.extra.insert(QStringLiteral("color"), color);
+        }
         candidate.gates.append(gate);
     }
 
@@ -301,6 +345,35 @@ QString newGateId() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
+QColor gateColor(const Gate &gate) {
+    QString canonical;
+    if (gate.extra.contains(QStringLiteral("color")) &&
+        canonicalRgbColor(gate.extra.value(QStringLiteral("color")), &canonical, nullptr))
+        return QColor(canonical);
+    if (gate.type == QStringLiteral("start"))
+        return QColor("#292929");
+    if (gate.type == QStringLiteral("pillar"))
+        return QColor("#303030");
+    if (gate.type == QStringLiteral("flag"))
+        return QColor("#858585");
+    return QColor("#4B4B4B");
+}
+
+bool setGateColor(Gate &gate, const QColor &color, QString *error) {
+    if (error)
+        error->clear();
+    if (!color.isValid())
+        return fail(error, QStringLiteral("请选择有效的组件颜色。"));
+    if (color.alpha() != 255)
+        return fail(error, QStringLiteral("组件颜色必须是不透明的 RGB 颜色。"));
+    gate.extra.insert(QStringLiteral("color"), color.toRgb().name(QColor::HexRgb).toUpper());
+    return true;
+}
+
+void resetGateColor(Gate &gate) {
+    gate.extra.remove(QStringLiteral("color"));
+}
+
 QString gateTypeName(const QString &type) {
     if (type == QStringLiteral("standard"))
         return QStringLiteral("标准门");
@@ -331,20 +404,19 @@ TrackDocument demoDocument() {
     };
     // Original demonstration layout. Coordinates are metres in the editor plane.
     const DemoGate layout[] = {
-        {-29, 13, "start", 1.2, 2.4, 2.4},    {-33, 3, "standard", 1.2, 4.8, 2.4},
-        {-26, -9, "standard", 1.2, 3.0, 3.0}, {-19, -19, "standard", 1.2, 2.4, 2.4},
-        {-9, -24, "pillar", 1.5, .4, 3.0},    {3, -25, "standard", 2.5, 2.4, 4.8},
-        {16, -22, "standard", 1.2, 2.4, 2.4}, {25, -13, "standard", 1.2, 2.4, 2.4},
-        {31, -3, "standard", 1.2, 3.0, 3.0},  {33, 8, "standard", 1.2, 4.8, 2.4},
-        {24, 17, "standard", 1.2, 2.4, 2.4},  {12, 21, "pillar", 1.5, .4, 3.0},
-        {2, 16, "standard", 3.5, 2.4, 2.4},   {6, 6, "standard", 2.5, 2.4, 4.8},
-        {-1, 0, "standard", 1.2, 2.4, 2.4},   {-10, 7, "standard", 1.2, 2.4, 2.4},
-        {-13, 19, "standard", 1.2, 3.0, 3.0}, {-22, 22, "pillar", 1.5, .4, 3.0}};
+        {-29, 13, "start", 1.6, 3.0, 3.0},    {-33, 3, "standard", 1.6, 3.0, 3.0},
+        {-26, -9, "standard", 1.6, 3.0, 3.0}, {-19, -19, "standard", 1.6, 3.0, 3.0},
+        {-9, -24, "pillar", 1.6, .1, 3.2},    {3, -25, "standard", 2.5, 3.0, 3.0},
+        {16, -22, "standard", 1.6, 3.0, 3.0}, {25, -13, "standard", 1.6, 3.0, 3.0},
+        {31, -3, "standard", 1.6, 3.0, 3.0},  {33, 8, "standard", 1.6, 3.0, 3.0},
+        {24, 17, "standard", 1.6, 3.0, 3.0},  {12, 21, "pillar", 1.6, .1, 3.2},
+        {2, 16, "standard", 3.5, 3.0, 3.0},   {6, 6, "standard", 2.5, 3.0, 3.0},
+        {-1, 0, "standard", 1.6, 3.0, 3.0},   {-10, 7, "standard", 1.6, 3.0, 3.0},
+        {-13, 19, "standard", 1.6, 3.0, 3.0}, {-22, 22, "pillar", 1.6, .1, 3.2}};
     constexpr qsizetype count = sizeof(layout) / sizeof(layout[0]);
     for (qsizetype i = 0; i < count; ++i) {
-        Gate gate;
-        gate.id = newGateId();
-        gate.type = QString::fromLatin1(layout[i].type);
+        Gate gate =
+            makeGate(QString::fromLatin1(layout[i].type), layout[i].width, layout[i].height);
         gate.position = QPointF(layout[i].x, layout[i].y);
         gate.elevation = layout[i].elevation;
         gate.width = layout[i].width;
@@ -358,6 +430,74 @@ TrackDocument demoDocument() {
         document.gates.append(gate);
     }
     return document;
+}
+
+GateFrameMetrics gateFrameMetrics(const Gate &gate) {
+    GateFrameMetrics metrics;
+    metrics.centerWidth = gate.width;
+    metrics.centerHeight = gate.height;
+    if (gate.type == QStringLiteral("pillar")) {
+        metrics.beamThickness = gate.width;
+        metrics.horizontalBeamLength = metrics.outerWidth = gate.width;
+        metrics.verticalBeamLength = metrics.outerHeight = gate.height;
+        return metrics;
+    }
+    metrics.centerlineModel = gate.extra.value(QStringLiteral("frameGeometry")).toString() ==
+                              QStringLiteral("centerline-v1");
+    if (metrics.centerlineModel) {
+        const auto setting = [&gate](const QString &field, double fallback, double minimum) {
+            const auto value = gate.extra.value(field);
+            const double number = value.toDouble(fallback);
+            return std::isfinite(number) && number >= minimum && number <= 10000.0 ? number
+                                                                                   : fallback;
+        };
+        metrics.beamThickness = setting(QStringLiteral("beamThickness"), .1, .001);
+        const double overhang = setting(QStringLiteral("beamOverhang"), .2, 0.0);
+        metrics.horizontalBeamLength = gate.width + overhang;
+        metrics.verticalBeamLength = gate.height + overhang;
+    } else {
+        // Keep existing project/import geometry exactly as the earlier renderer used it.
+        metrics.beamThickness = std::clamp(std::min(gate.width, gate.height) * .041, .055, .16);
+        metrics.horizontalBeamLength = gate.width;
+        metrics.verticalBeamLength = gate.height + metrics.beamThickness;
+    }
+    metrics.openingWidth = std::max(0.0, gate.width - metrics.beamThickness);
+    metrics.openingHeight = std::max(0.0, gate.height - metrics.beamThickness);
+    metrics.outerWidth = std::max(metrics.horizontalBeamLength, gate.width + metrics.beamThickness);
+    metrics.outerHeight = std::max(metrics.verticalBeamLength, gate.height + metrics.beamThickness);
+    return metrics;
+}
+
+QVector<GateBeam> gateFrameBeams(const Gate &gate) {
+    if (gate.type == QStringLiteral("pillar"))
+        return {};
+    const auto metrics = gateFrameMetrics(gate);
+    const float halfWidth = static_cast<float>(metrics.centerWidth / 2.0);
+    const float halfHeight = static_cast<float>(metrics.centerHeight / 2.0);
+    const float thickness = static_cast<float>(metrics.beamThickness);
+    const float horizontal = static_cast<float>(metrics.horizontalBeamLength);
+    const float vertical = static_cast<float>(metrics.verticalBeamLength);
+    return {{{-halfWidth, 0, 0}, {thickness, vertical, thickness}},
+            {{halfWidth, 0, 0}, {thickness, vertical, thickness}},
+            {{0, halfHeight, 0}, {horizontal, thickness, thickness}},
+            {{0, -halfHeight, 0}, {horizontal, thickness, thickness}}};
+}
+
+Gate makeGate(const QString &type, double width, double height) {
+    Gate gate;
+    gate.id = newGateId();
+    gate.type = type;
+    const bool pillar = type == QStringLiteral("pillar");
+    gate.width = std::isfinite(width) && width > 0 ? width : (pillar ? .1 : 3.0);
+    gate.height = std::isfinite(height) && height > 0 ? height : (pillar ? 3.2 : 3.0);
+    if (!pillar && type != QStringLiteral("flag")) {
+        gate.extra.insert(QStringLiteral("frameGeometry"), QStringLiteral("centerline-v1"));
+        gate.extra.insert(QStringLiteral("beamThickness"), .1);
+        gate.extra.insert(QStringLiteral("beamOverhang"), .2);
+    }
+    gate.elevation = gateFrameMetrics(gate).outerHeight / 2.0;
+    setGateColor(gate, QColor(QStringLiteral("#0d0d0d")));
+    return gate;
 }
 
 QPointF gatePassagePosition(const Gate &gate) {

@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QQuaternion>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QVector3D>
 #include <cmath>
@@ -262,6 +263,131 @@ int main(int argc, char **argv) {
     obsolete.gates[2].type = QStringLiteral("flag");
     require(!ot::exportVelocidrone(savedPath, obsolete, &error),
             "new flags cannot masquerade as physical turn pillars");
+    const auto colors = ot::nativeBlockColors();
+    require(colors.size() == 13, "thirteen native cube materials exposed to UI");
+    for (const auto &entry : colors)
+        require(ot::nearestNativeBlockColor(entry.color).prefab == entry.prefab,
+                "exact palette color selects its real native prefab");
+    require(ot::nearestNativeBlockColor(QColor("#e50001")).prefab == 2220,
+            "custom near-red RGB explicitly maps to native red material");
+
+    ot::TrackDocument framed;
+    framed.name = QStringLiteral("Exact colored beams");
+    auto exact = ot::makeGate(QStringLiteral("start"));
+    ot::setGateColor(exact, QColor("#e60000"));
+    auto coloredPost = ot::makeGate(QStringLiteral("pillar"));
+    coloredPost.position = {7, 9};
+    coloredPost.yaw = 30;
+    coloredPost.extra.insert(QStringLiteral("passSide"), -1);
+    ot::setGateColor(coloredPost, QColor("#00cc00"));
+    framed.gates = {exact, coloredPost};
+    const auto compositePath = directory.filePath(QStringLiteral("composite.trk"));
+    require(ot::exportVelocidrone(compositePath, framed, &error),
+            "export exact colored four-cube frame and pillar");
+    const QByteArray compositeCipher = readFile(compositePath);
+    ot::TrackDocument recoveredFrame;
+    require(ot::importVelocidrone(compositePath, &recoveredFrame, &error),
+            "import composite frame assembly");
+    if (recoveredFrame.gates.size() == 2) {
+        require(ot::gateFrameMetrics(recoveredFrame.gates[0]).centerlineModel &&
+                    near(recoveredFrame.gates[0].width, 3) &&
+                    near(recoveredFrame.gates[0].height, 3),
+                "four native bars and checkpoint reconstruct three metre centreline frame");
+        require(ot::gateColor(recoveredFrame.gates[0]) == QColor("#e60000") &&
+                    ot::gateColor(recoveredFrame.gates[1]) == QColor("#00cc00"),
+                "frame and pillar retain independent native colors");
+        const auto native =
+            recoveredFrame.extra.value(QStringLiteral("velocidroneRoot")).toObject();
+        const auto bars = native.value(QStringLiteral("barriers")).toArray();
+        require(bars.size() == 5, "four frame bars plus one pillar are physical native barriers");
+        int vertical = 0, horizontal = 0, green = 0;
+        QSet<int> levels;
+        for (const auto &value : bars) {
+            const auto bar = value.toObject();
+            const auto trans = bar.value(QStringLiteral("trans")).toObject();
+            const auto scale = trans.value(QStringLiteral("scale")).toArray();
+            if (bar.value(QStringLiteral("prefab")).toInt() == 2220) {
+                require(!bar.contains(QStringLiteral("gate")),
+                        "colored physical beam is not a trigger");
+                if (scale == QJsonArray{10, 320, 10})
+                    ++vertical;
+                if (scale == QJsonArray{320, 10, 10})
+                    ++horizontal;
+                levels.insert(trans.value(QStringLiteral("pos")).toArray()[1].toInt());
+            }
+            if (bar.value(QStringLiteral("prefab")).toInt() == 2223)
+                ++green;
+        }
+        require(vertical == 2 && horizontal == 2 && green == 1,
+                "stock beams are exactly3.2m long with0.1m square section");
+        require(levels == QSet<int>{0, 5, 305},
+                "four beam origins reproduce centerline3m and ground contact");
+        const auto checkpoint = native.value(QStringLiteral("gates")).toArray()[0].toObject();
+        require(checkpoint.value(QStringLiteral("prefab")).toInt() == 88 &&
+                    checkpoint.value(QStringLiteral("start")).toBool(),
+                "start checkpoint is separate from solid beams");
+        require(checkpoint.value(QStringLiteral("trans"))
+                        .toObject()
+                        .value(QStringLiteral("scale"))
+                        .toArray() == QJsonArray{100, 145, 145},
+                "checkpoint follows clear opening2.9m, not centerline3m or stocklength3.2m");
+        require(ot::exportVelocidrone(compositePath, recoveredFrame, &error) &&
+                    readFile(compositePath) == compositeCipher,
+                "unchanged composite raw assemblies roundtrip byte-for-byte without barrier "
+                "duplication");
+        ot::setGateColor(recoveredFrame.gates[0], QColor("#0000e6"));
+        ot::setGateColor(recoveredFrame.gates[1], QColor("#00d9d9"));
+        recoveredFrame.gates[0].position = {4, 2};
+        recoveredFrame.gates[0].yaw = 90;
+        recoveredFrame.gates[0].width = 4;
+        recoveredFrame.gates[0].height = 3.5;
+        require(ot::exportVelocidrone(compositePath, recoveredFrame, &error),
+                "recolor resize move and rotate composite geometry");
+        ot::TrackDocument changed;
+        require(ot::importVelocidrone(compositePath, &changed, &error),
+                "restore modified colored assemblies");
+        if (changed.gates.size() == 2) {
+            require(ot::gateFrameMetrics(changed.gates[0]).centerlineModel &&
+                        near(changed.gates[0].width, 4) && near(changed.gates[0].height, 3.5) &&
+                        near(changed.gates[0].yaw, 90, .2),
+                    "modified dimensions and yaw retained");
+            require(ot::gateColor(changed.gates[0]) == QColor("#0000e6") &&
+                        ot::gateColor(changed.gates[1]) == QColor("#00d9d9"),
+                    "changed native color materials replace old physical assemblies");
+            auto duplicate = changed.gates[0];
+            duplicate.id = ot::newGateId();
+            duplicate.type = QStringLiteral("standard");
+            duplicate.position += QPointF(6, 0);
+            changed.gates.append(duplicate);
+            require(ot::exportVelocidrone(compositePath, changed, &error),
+                    "duplicate frame assembly");
+            ot::TrackDocument duplicated;
+            require(ot::importVelocidrone(compositePath, &duplicated, &error),
+                    "restore duplicate frame assembly");
+            require(duplicated.extra.value(QStringLiteral("velocidroneRoot"))
+                            .toObject()
+                            .value(QStringLiteral("barriers"))
+                            .toArray()
+                            .size() == 9,
+                    "duplicate creates four additional beams only");
+            if (duplicated.gates.size() == 3) {
+                duplicated.gates.removeLast();
+                require(ot::exportVelocidrone(compositePath, duplicated, &error),
+                        "delete imported composite assembly");
+                ot::TrackDocument deleted;
+                require(ot::importVelocidrone(compositePath, &deleted, &error),
+                        "restore after composite deletion");
+                require(deleted.extra.value(QStringLiteral("velocidroneRoot"))
+                                .toObject()
+                                .value(QStringLiteral("barriers"))
+                                .toArray()
+                                .size() == 5,
+                        "deleting logical frame removes all four owned beams");
+            }
+        }
+    } else
+        require(false, "composite course logical object count");
+
     const QByteArray sentinel("keep existing file");
     require(writeFile(savedPath, sentinel), "write sentinel");
     created.gates[1].type = QStringLiteral("cube");

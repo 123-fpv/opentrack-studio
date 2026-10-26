@@ -36,6 +36,8 @@ const QString NativeRoot = QStringLiteral("velocidroneRoot");
 const QString NativeScene = QStringLiteral("velocidroneSceneId");
 const QString PillarBarrier = QStringLiteral("velocidronePillarBarrier");
 const QString OwnedPillarBarriers = QStringLiteral("velocidroneOwnedPillarBarriers");
+const QString FrameBarriers = QStringLiteral("velocidroneFrameBarriers");
+const QString OwnedFrameBarriers = QStringLiteral("velocidroneOwnedFrameBarriers");
 constexpr int PillarPrefab = 2218;         // BlockBlack: native one-metre stretchable cube.
 constexpr int PillarCheckpointPrefab = 88; // Invisible helper in its local Y/Z plane.
 constexpr double PillarCheckpointSize = 2.4;
@@ -168,6 +170,13 @@ QJsonObject baseline(const Gate &gate) {
             {QStringLiteral("height"), gate.height},
             {QStringLiteral("yaw"), gate.yaw},
             {QStringLiteral("type"), gate.type},
+            {QStringLiteral("color"), gateColor(gate).name(QColor::HexRgb)},
+            {QStringLiteral("frameGeometry"),
+             gate.extra.value(QStringLiteral("frameGeometry")).toString()},
+            {QStringLiteral("beamThickness"),
+             gate.extra.value(QStringLiteral("beamThickness")).toDouble(.1)},
+            {QStringLiteral("beamOverhang"),
+             gate.extra.value(QStringLiteral("beamOverhang")).toDouble(.2)},
             {QStringLiteral("passSide"),
              gate.extra.value(QStringLiteral("passSide")).toInt(1) < 0 ? -1 : 1}};
 }
@@ -215,6 +224,8 @@ bool unchangedPillar(const Gate &gate) {
            same(previous.value(QStringLiteral("width")).toDouble(), gate.width) &&
            same(previous.value(QStringLiteral("height")).toDouble(), gate.height) &&
            same(previous.value(QStringLiteral("yaw")).toDouble(), gate.yaw) &&
+           previous.value(QStringLiteral("color")).toString() ==
+               gateColor(gate).name(QColor::HexRgb) &&
            previous.value(QStringLiteral("passSide")).toInt(1) ==
                (gate.extra.value(QStringLiteral("passSide")).toInt(1) < 0 ? -1 : 1);
 }
@@ -246,7 +257,7 @@ QJsonObject pillarBarrierObject(const Gate &gate) {
     transform.insert(
         QStringLiteral("scale"),
         QJsonArray{qRound(gate.width * 100), qRound(gate.height * 100), qRound(gate.width * 100)});
-    object.insert(QStringLiteral("prefab"), PillarPrefab);
+    object.insert(QStringLiteral("prefab"), nearestNativeBlockColor(gateColor(gate)).prefab);
     object.insert(QStringLiteral("trans"), transform);
     return object;
 }
@@ -267,7 +278,8 @@ void restorePillars(TrackDocument *document, const QJsonArray &barriers) {
     QHash<QString, QVector<Candidate>> candidates;
     for (qsizetype i = 0; i < barriers.size(); ++i) {
         const auto object = barriers[i].toObject();
-        if (object.value(QStringLiteral("prefab")).toInt() != PillarPrefab)
+        const int prefab = object.value(QStringLiteral("prefab")).toInt();
+        if (prefab < 2218 || prefab > 2230)
             continue;
         const auto transform = object.value(QStringLiteral("trans")).toObject();
         QJsonArray pos, rot, scale;
@@ -288,6 +300,11 @@ void restorePillars(TrackDocument *document, const QJsonArray &barriers) {
         const auto forward = orientation.rotatedVector(QVector3D(0, 0, 1));
         Gate pillar;
         pillar.type = QStringLiteral("pillar");
+        for (const auto &entry : nativeBlockColors())
+            if (entry.prefab == prefab) {
+                setGateColor(pillar, entry.color);
+                break;
+            }
         pillar.position = {pos[0].toDouble() / 100, pos[2].toDouble() / 100};
         pillar.width = scale[0].toDouble() / 100;
         pillar.height = scale[1].toDouble() / 100;
@@ -301,6 +318,8 @@ void restorePillars(TrackDocument *document, const QJsonArray &barriers) {
     }
     QSet<int> owned;
     for (auto &gate : document->gates) {
+        if (gateFrameMetrics(gate).centerlineModel)
+            continue;
         const auto checkpoint = gate.extra.value(NativeObject).toObject();
         if (checkpoint.value(QStringLiteral("prefab")).toInt() != PillarCheckpointPrefab)
             continue;
@@ -362,6 +381,172 @@ void restorePillars(TrackDocument *document, const QJsonArray &barriers) {
         document->extra.insert(OwnedPillarBarriers, indices);
 }
 
+bool compositeFrame(const Gate &gate) {
+    return (gate.type == QStringLiteral("standard") || gate.type == QStringLiteral("start")) &&
+           gateFrameMetrics(gate).centerlineModel;
+}
+
+bool unchangedFrame(const Gate &gate) {
+    return compositeFrame(gate) && gate.extra.value(NativeBaseline).toObject() == baseline(gate) &&
+           gate.extra.value(FrameBarriers).toArray().size() == 4;
+}
+
+QJsonArray frameBarrierObjects(const Gate &gate) {
+    if (unchangedFrame(gate))
+        return gate.extra.value(FrameBarriers).toArray();
+    QJsonArray objects;
+    const auto rotation = QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate.yaw));
+    const int prefab = nearestNativeBlockColor(gateColor(gate)).prefab;
+    for (const auto &beam : gateFrameBeams(gate)) {
+        const auto offset =
+            rotation.rotatedVector(beam.center - QVector3D(0, beam.size.y() / 2, 0));
+        QJsonObject transform{
+            {QStringLiteral("pos"), QJsonArray{qRound((gate.position.x() + offset.x()) * 100),
+                                               qRound((gate.elevation + offset.y()) * 100),
+                                               qRound((gate.position.y() + offset.z()) * 100)}},
+            {QStringLiteral("rot"), rotationArray(rotation)},
+            {QStringLiteral("scale"),
+             QJsonArray{qRound(beam.size.x() * 100), qRound(beam.size.y() * 100),
+                        qRound(beam.size.z() * 100)}}};
+        objects.append(
+            QJsonObject{{QStringLiteral("prefab"), prefab}, {QStringLiteral("trans"), transform}});
+    }
+    return objects;
+}
+
+QJsonObject frameCheckpointTransform(const Gate &gate) {
+    const auto frame = gateFrameMetrics(gate);
+    const auto rotation = QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate.yaw - 90));
+    const auto offset =
+        rotation.rotatedVector(QVector3D(0, 0, static_cast<float>(-frame.openingWidth / 2)));
+    return {{QStringLiteral("pos"), QJsonArray{qRound((gate.position.x() - offset.x()) * 100),
+                                               qRound((gate.elevation - offset.y()) * 100),
+                                               qRound((gate.position.y() - offset.z()) * 100)}},
+            {QStringLiteral("rot"), rotationArray(rotation)},
+            {QStringLiteral("scale"),
+             QJsonArray{100, qRound(frame.openingHeight * 50), qRound(frame.openingWidth * 50)}}};
+}
+
+void restoreFrames(TrackDocument *document, const QJsonArray &barriers) {
+    struct Block {
+        int index;
+        QJsonObject raw;
+        QJsonArray pos, scale;
+        QQuaternion rotation;
+    };
+    QHash<QString, QVector<Block>> blocks;
+    for (qsizetype i = 0; i < barriers.size(); ++i) {
+        const auto object = barriers[i].toObject();
+        const int prefab = object.value(QStringLiteral("prefab")).toInt();
+        if (prefab < 2218 || prefab > 2230)
+            continue;
+        const auto trans = object.value(QStringLiteral("trans")).toObject();
+        QJsonArray pos, rot, scale;
+        if (!numericArray(trans.value(QStringLiteral("pos")), 3, &pos) ||
+            !numericArray(trans.value(QStringLiteral("rot")), 4, &rot, 1000000) ||
+            !numericArray(trans.value(QStringLiteral("scale")), 3, &scale, 1000000))
+            continue;
+        double norm = 0;
+        for (const auto &value : rot)
+            norm += value.toDouble() * value.toDouble();
+        if (norm < 1)
+            continue;
+        blocks[pillarBucket({pos[0].toDouble() / 100, pos[2].toDouble() / 100})].append(
+            {static_cast<int>(i), object, pos, scale, quaternion(rot)});
+    }
+    QSet<int> owned;
+    for (auto &gate : document->gates) {
+        const auto object = gate.extra.value(NativeObject).toObject();
+        if (object.value(QStringLiteral("prefab")).toInt() != 88)
+            continue;
+        const auto trans = object.value(QStringLiteral("trans")).toObject();
+        const auto scale = trans.value(QStringLiteral("scale")).toArray();
+        if (scale[0].toInt() != 100 || scale[1].toDouble() < 1 || scale[2].toDouble() < 1)
+            continue;
+        const double openingWidth = scale[2].toDouble() / 50,
+                     openingHeight = scale[1].toDouble() / 50;
+        const auto rotation = quaternion(trans.value(QStringLiteral("rot")).toArray());
+        const auto normal = rotation.rotatedVector(QVector3D(1, 0, 0));
+        if (std::abs(normal.y()) > .003f)
+            continue;
+        const auto pos = trans.value(QStringLiteral("pos")).toArray();
+        const auto offset =
+            rotation.rotatedVector(QVector3D(0, 0, static_cast<float>(-openingWidth / 2)));
+        Gate recovered =
+            makeGate(object.value(QStringLiteral("start")).toBool() ? QStringLiteral("start")
+                                                                    : QStringLiteral("standard"),
+                     openingWidth + .1, openingHeight + .1);
+        recovered.id = gate.id;
+        recovered.position = {pos[0].toDouble() / 100 + offset.x(),
+                              pos[2].toDouble() / 100 + offset.z()};
+        recovered.elevation = pos[1].toDouble() / 100 + offset.y();
+        recovered.yaw = std::atan2(normal.x(), normal.z()) * 180.0 / 3.14159265358979323846;
+        bool matched = false;
+        for (const auto &color : nativeBlockColors()) {
+            setGateColor(recovered, color.color);
+            const auto expected = frameBarrierObjects(recovered);
+            QSet<int> selected;
+            QJsonArray originals;
+            for (const auto &value : expected) {
+                const auto wanted = value.toObject().value(QStringLiteral("trans")).toObject();
+                const auto wantedPos = wanted.value(QStringLiteral("pos")).toArray();
+                const auto wantedScale = wanted.value(QStringLiteral("scale")).toArray();
+                const auto wantedRotation =
+                    quaternion(wanted.value(QStringLiteral("rot")).toArray());
+                const QPointF point(wantedPos[0].toDouble() / 100, wantedPos[2].toDouble() / 100);
+                bool found = false;
+                for (int x = -1; x <= 1 && !found; ++x)
+                    for (int z = -1; z <= 1 && !found; ++z) {
+                        const auto bucket =
+                            blocks.constFind(pillarBucket(point + QPointF(x * .25, z * .25)));
+                        if (bucket == blocks.cend())
+                            continue;
+                        for (const auto &block : bucket.value()) {
+                            if (owned.contains(block.index) || selected.contains(block.index) ||
+                                block.raw.value(QStringLiteral("prefab")).toInt() != color.prefab ||
+                                std::abs(QQuaternion::dotProduct(block.rotation, wantedRotation)) <
+                                    .99999f)
+                                continue;
+                            bool close = true;
+                            for (int axis = 0; axis < 3; ++axis)
+                                if (std::abs(block.pos[axis].toDouble() -
+                                             wantedPos[axis].toDouble()) > 3 ||
+                                    std::abs(block.scale[axis].toDouble() -
+                                             wantedScale[axis].toDouble()) > 1)
+                                    close = false;
+                            if (!close)
+                                continue;
+                            selected.insert(block.index);
+                            originals.append(block.raw);
+                            found = true;
+                            break;
+                        }
+                    }
+                if (!found)
+                    break;
+            }
+            if (originals.size() != 4)
+                continue;
+            recovered.label = gateTypeName(recovered.type);
+            recovered.extra.insert(NativeObject, object);
+            recovered.extra.insert(FrameBarriers, originals);
+            recovered.extra.insert(NativeBaseline, baseline(recovered));
+            gate = std::move(recovered);
+            owned.unite(selected);
+            matched = true;
+            break;
+        }
+        Q_UNUSED(matched)
+    }
+    QJsonArray indices;
+    auto ordered = owned.values();
+    std::sort(ordered.begin(), ordered.end());
+    for (int index : ordered)
+        indices.append(index);
+    if (!indices.isEmpty())
+        document->extra.insert(OwnedFrameBarriers, indices);
+}
+
 bool makeNativeObject(const Gate &gate, int index, bool isStart, QJsonObject *result,
                       QString *error) {
     if (!finiteGate(gate))
@@ -370,6 +555,19 @@ bool makeNativeObject(const Gate &gate, int index, bool isStart, QJsonObject *re
     QJsonObject object = gate.extra.value(NativeObject).toObject();
     const QJsonObject previous = gate.extra.value(NativeBaseline).toObject();
     const bool hasNative = !object.isEmpty() && !previous.isEmpty();
+    if (compositeFrame(gate)) {
+        const auto frame = gateFrameMetrics(gate);
+        if (frame.openingWidth < .02 || frame.openingHeight < .02 || frame.beamThickness < .01)
+            return fail(error, QStringLiteral("方梁门的净开口或梁截面无效，请增加中心线间距。"));
+        object.insert(QStringLiteral("prefab"), 88);
+        if (!unchangedFrame(gate))
+            object.insert(QStringLiteral("trans"), frameCheckpointTransform(gate));
+        object.insert(QStringLiteral("gate"), index);
+        object.insert(QStringLiteral("start"), isStart);
+        object.insert(QStringLiteral("finish"), isStart);
+        *result = object;
+        return true;
+    }
     if (gate.type == QStringLiteral("pillar")) {
         if (isStart)
             return fail(error, QStringLiteral("转向柱是实体障碍，不能作为起终点，请添加标准门。"));
@@ -463,6 +661,39 @@ bool makeNativeObject(const Gate &gate, int index, bool isStart, QJsonObject *re
 }
 } // namespace
 
+QVector<NativeBlockColor> nativeBlockColors() {
+    return {{2218, QStringLiteral("黑色"), QColor("#0d0d0d")},
+            {2219, QStringLiteral("白色"), QColor("#e6e6e6")},
+            {2220, QStringLiteral("红色"), QColor("#e60000")},
+            {2221, QStringLiteral("橙色"), QColor("#e67300")},
+            {2222, QStringLiteral("黄色"), QColor("#e6e600")},
+            {2223, QStringLiteral("绿色"), QColor("#00cc00")},
+            {2224, QStringLiteral("青色"), QColor("#00d9d9")},
+            {2225, QStringLiteral("蓝色"), QColor("#0000e6")},
+            {2226, QStringLiteral("紫色"), QColor("#8c00e6")},
+            {2227, QStringLiteral("粉色"), QColor("#f280bf")},
+            {2228, QStringLiteral("玫红"), QColor("#e61a66")},
+            {2229, QStringLiteral("浅蓝"), QColor("#0566e6")},
+            {2230, QStringLiteral("深绿"), QColor("#006619")}};
+}
+
+NativeBlockColor nearestNativeBlockColor(const QColor &color) {
+    const auto palette = nativeBlockColors();
+    auto best = palette.first();
+    int distance = std::numeric_limits<int>::max();
+    const QColor source = color.isValid() ? color : best.color;
+    for (const auto &entry : palette) {
+        const int r = source.red() - entry.color.red(), g = source.green() - entry.color.green(),
+                  b = source.blue() - entry.color.blue();
+        const int candidate = r * r + g * g + b * b;
+        if (candidate < distance) {
+            distance = candidate;
+            best = entry;
+        }
+    }
+    return best;
+}
+
 bool exportVelocidrone(const QString &path, const TrackDocument &document, QString *error) {
     if (error)
         error->clear();
@@ -503,14 +734,20 @@ bool exportVelocidrone(const QString &path, const TrackDocument &document, QStri
     QSet<int> owned;
     for (const auto &value : document.extra.value(OwnedPillarBarriers).toArray())
         owned.insert(value.toInt(-1));
+    for (const auto &value : document.extra.value(OwnedFrameBarriers).toArray())
+        owned.insert(value.toInt(-1));
     QJsonArray barriers;
     const auto nativeBarriers = layout.value(QStringLiteral("barriers")).toArray();
     for (qsizetype i = 0; i < nativeBarriers.size(); ++i)
         if (!owned.contains(static_cast<int>(i)))
             barriers.append(nativeBarriers[i]);
-    for (const auto &gate : document.gates)
+    for (const auto &gate : document.gates) {
         if (gate.type == QStringLiteral("pillar"))
             barriers.append(pillarBarrierObject(gate));
+        else if (compositeFrame(gate))
+            for (const auto &bar : frameBarrierObjects(gate))
+                barriers.append(bar);
+    }
     layout.insert(QStringLiteral("barriers"), barriers);
     QString name = document.name;
     name.replace(QLatin1Char('\r'), QLatin1Char(' '));
@@ -637,6 +874,7 @@ bool importVelocidrone(const QString &path, TrackDocument *document, QString *er
                      [](const OrderedGate &a, const OrderedGate &b) { return a.index < b.index; });
     for (const auto &entry : ordered)
         imported.gates.append(entry.gate);
+    restoreFrames(&imported, layout.value(QStringLiteral("barriers")).toArray());
     restorePillars(&imported, layout.value(QStringLiteral("barriers")).toArray());
     *document = std::move(imported);
     return true;

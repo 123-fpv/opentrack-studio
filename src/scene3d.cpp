@@ -115,21 +115,18 @@ void box(Batch &batch, const Gate &gate, const QVector3D &center, const QVector3
 }
 
 void frame(Batch &batch, const Gate &gate, float depth, const QColor &color) {
-    const float w = static_cast<float>(gate.width), h = static_cast<float>(gate.height);
-    const float t = std::clamp(std::min(w, h) * .041f, .055f, .16f);
-    box(batch, gate, {-w / 2, 0, depth}, {t, h + t, t}, color);
-    box(batch, gate, {w / 2, 0, depth}, {t, h + t, t}, color);
-    box(batch, gate, {0, h / 2, depth}, {w, t, t}, color);
-    box(batch, gate, {0, -h / 2, depth}, {w, t, t}, color);
+    for (const auto &beam : gateFrameBeams(gate))
+        box(batch, gate, beam.center + QVector3D(0, 0, depth), beam.size, color);
 }
 
 void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
     const float w = static_cast<float>(gate.width), h = static_cast<float>(gate.height);
-    const QColor frameColor = selected ? QColor("#151515") : QColor("#4b4b4b");
-    const QColor color = gate.type == QStringLiteral("start") ? QColor("#292929") : frameColor;
+    (void)selected; // Selection uses neutral outlines/halos, retaining the component's own color.
+    const QColor color = gateColor(gate);
+    const auto metrics = gateFrameMetrics(gate);
     if (gate.type == QStringLiteral("pillar")) {
         // A stretched native black cube: no openings, flag cloth or decorative geometry.
-        box(batch, gate, {0, 0, 0}, {w, h, w}, selected ? QColor("#161616") : QColor("#303030"));
+        box(batch, gate, {0, 0, 0}, {w, h, w}, color);
         return;
     }
     if (gate.type == QStringLiteral("flag")) {
@@ -139,7 +136,7 @@ void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
         const auto b = gatePoint(gate, {w * .42f, h / 2 - h * .13f, .07f});
         const auto c = gatePoint(gate, {w * .34f, h / 2 - h * .50f, .03f});
         const auto d = gatePoint(gate, {.04f, h / 2 - h * .42f, 0});
-        quad(batch, a, b, c, d, QColor("#858585"));
+        quad(batch, a, b, c, d, color);
         const auto a2 = gatePoint(gate, {.08f, h / 2 - h * .17f, .012f});
         const auto b2 = gatePoint(gate, {w * .29f, h / 2 - h * .23f, .06f});
         const auto c2 = gatePoint(gate, {.08f, h / 2 - h * .24f, .012f});
@@ -158,13 +155,13 @@ void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
         box(batch, gate, {0, 0, 0}, {.09f, h, .09f}, color);
     if (gate.type == QStringLiteral("ladder"))
         box(batch, gate, {0, 0, 0}, {w, .09f, .09f}, color);
-    if (gate.type == QStringLiteral("start")) {
+    if (gate.type == QStringLiteral("start") && !metrics.centerlineModel) {
         const int squares = std::max(4, static_cast<int>(w / .24f));
         const float tile = w / static_cast<float>(squares);
         for (int i = 0; i < squares; ++i)
             box(batch, gate, {-w / 2 + tile * (static_cast<float>(i) + .5f), h / 2, .007f},
                 {tile * .97f, .19f, .12f}, i % 2 ? QColor("#f5f5f5") : QColor("#171717"));
-    } else {
+    } else if (!metrics.centerlineModel) {
         // Small white corner sleeves make the opening legible at oblique angles.
         for (const float x : {-w / 2, w / 2})
             box(batch, gate, {x, h / 2 - .13f, .007f}, {.12f, .22f, .12f}, QColor("#e5e5e5"));
@@ -430,7 +427,7 @@ struct Scene3D::Impl {
         bool hasBounds = false;
         if (document) {
             for (const auto &item : document->gates) {
-                const double half = std::max(2.0, item.width / 2 + .5);
+                const double half = std::max(2.0, gateFrameMetrics(item).outerWidth / 2 + .5);
                 const QRectF one(item.position.x() - half, item.position.y() - half, half * 2,
                                  half * 2);
                 bounds = hasBounds ? bounds.united(one) : one;
@@ -508,8 +505,9 @@ struct Scene3D::Impl {
                          arrowBase + direction * .65f + side * .19f,
                          arrowBase + direction * .65f - side * .19f, arrowColor);
                 if (item.id == selected) {
-                    const float halfW = static_cast<float>(item.width / 2 + .15);
-                    const float halfH = static_cast<float>(item.height / 2 + .15);
+                    const auto metrics = gateFrameMetrics(item);
+                    const float halfW = static_cast<float>(metrics.outerWidth / 2 + .15);
+                    const float halfH = static_cast<float>(metrics.outerHeight / 2 + .15);
                     const auto a0 = gatePoint(item, {-halfW, -halfH, -.015f});
                     const auto b0 = gatePoint(item, {halfW, -halfH, -.015f});
                     const auto c0 = gatePoint(item, {halfW, halfH, -.015f});
@@ -592,12 +590,8 @@ struct Scene3D::Impl {
     void updateGhost() {
         ghostBatch.vertices.clear();
         if (!placement.isEmpty() && haveGhost) {
-            Gate item;
-            item.type = placement;
+            Gate item = makeGate(placement, placeWidth, placeHeight);
             item.position = ghost;
-            item.width = placeWidth;
-            item.height = placeHeight;
-            item.elevation = placeHeight / 2;
             buildGate(ghostBatch, item);
             ghostBatch.opacity = .38f;
         }
@@ -795,8 +789,9 @@ struct Scene3D::Impl {
                 return (eye - point3(*a)).lengthSquared() > (eye - point3(*b)).lengthSquared();
             });
             for (const auto *item : ordered) {
-                if (item->type == QStringLiteral("pillar")) {
-                    // Reuse the solid geometry in the fallback instead of an open frame.
+                if (item->type == QStringLiteral("pillar") ||
+                    gateFrameMetrics(*item).centerlineModel) {
+                    // Reuse actual beam/post cuboids, including their physical end overhangs.
                     Batch column;
                     buildGate(column, *item, item->id == selected);
                     struct Face {
@@ -842,13 +837,8 @@ struct Scene3D::Impl {
                         polygon.append(screen);
                 }
                 if (polygon.size() == 4) {
-                    const QColor color =
-                        item->type == QStringLiteral("start")
-                            ? QColor("#292929")
-                            : (item->type == QStringLiteral("flag") ? QColor("#858585")
-                                                                    : QColor("#4b4b4b"));
-                    painter.setPen(QPen(item->id == selected ? QColor("#151515") : color, 3.2,
-                                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                    const QColor color = gateColor(*item);
+                    painter.setPen(QPen(color, 3.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
                     painter.setBrush(QColor(color.red(), color.green(), color.blue(), 12));
                     painter.drawPolygon(polygon);
                 }
@@ -915,8 +905,9 @@ void Scene3D::fitTrack() {
         for (const auto &gate : d_->document->gates) {
             maxY = std::max(maxY, static_cast<float>(gate.elevation + gate.height / 2));
             minY = std::min(minY, static_cast<float>(gate.elevation - gate.height / 2));
-            const float halfWidth = static_cast<float>(gate.width / 2 + .15);
-            const float halfHeight = static_cast<float>(gate.height / 2 + .15);
+            const auto metrics = gateFrameMetrics(gate);
+            const float halfWidth = static_cast<float>(metrics.outerWidth / 2 + .15);
+            const float halfHeight = static_cast<float>(metrics.outerHeight / 2 + .15);
             for (const float x : {-halfWidth, halfWidth})
                 for (const float y : {-halfHeight, halfHeight})
                     fitPoints.push_back(gatePoint(gate, {x, y, 0}));

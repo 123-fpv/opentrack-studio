@@ -94,10 +94,10 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     form->addRow("API 密钥", key_);
     width_ = new QDoubleSpinBox;
     width_->setRange(.2, 20);
-    width_->setValue(2.4);
+    width_->setValue(3.0);
     width_->setSingleStep(.1);
     width_->setSuffix(" m");
-    form->addRow("已知门宽", width_);
+    form->addRow("门框中心线间距", width_);
     right->addLayout(form);
     auto *credentialRow = new QHBoxLayout;
     remember_ = new QCheckBox("在本机记住密钥");
@@ -116,8 +116,8 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     });
     right->addWidget(text("补充说明（可选，最多 4000 字）", "fieldLabel"));
     notes_ = new QPlainTextEdit;
-    notes_->setPlaceholderText("例如：起点是左下角绿门，顺时针飞行，门高约 2.4 "
-                               "米；中间是上下穿越。请只填写你确认的信息。");
+    notes_->setPlaceholderText("例如：起点是左下角绿门，顺时针飞行，门框中心线间距 3 米、"
+                               "梁长 3.2 米；中间是上下穿越。请只填写你确认的信息。");
     notes_->setMaximumHeight(68);
     right->addWidget(notes_);
     previewStack_ = new QStackedWidget;

@@ -232,7 +232,8 @@ void StudioWindow::setupUi() {
         help.setText(
             "① 查看赛道\n右键旋转视角，中键平移，滚轮缩放；F 显示整条赛道。\n\n"
             "② 移动组件\n先单击并松开，看到光圈后，再按住组件或脚下光圈拖动。\n"
-            "左侧修改尺寸、高度、朝向；转向柱可选择左右绕行。\n\n"
+            "左侧修改中心距、高度、朝向和颜色；转向柱可选择左右绕行。\n"
+            "标准门中心距 3 m，杆长 3.2 m，杆件截面 0.1 × 0.1 m。\n\n"
             "③ 从图片生成\n平面赛道图在本地识别；实拍、航拍照片使用 AI 生成草稿，预览后应用。\n\n"
             "④ 保存和使用\n保存工程得到 .otproj，方便继续编辑。\n"
             "导出赛道得到 .trk，在 VelociDrone 的 Track Editor → Import Track 中导入。\n\n"
@@ -311,7 +312,7 @@ void StudioWindow::setupUi() {
     advanced->hide();
     ll->addWidget(advanced);
     connect(advancedToggle, &QPushButton::toggled, advanced, &QWidget::setVisible);
-    autoScale_ = new QCheckBox("按门宽 2.4 m 估算比例");
+    autoScale_ = new QCheckBox("按中心距 3 m 估算比例");
     autoScale_->setChecked(true);
     al->addWidget(autoScale_);
     al->addWidget(label("底图比例 · 米 / 像素", "fieldLabel"));
@@ -362,18 +363,67 @@ void StudioWindow::setupUi() {
     z_ = number(-10000, 10000);
     alt_ = number(0, 1000);
     yaw_ = number(-3600, 3600, 15);
-    width_ = number(.2, 100);
-    height_ = number(.2, 100);
+    width_ = number(.01, 100, .01);
+    height_ = number(.1, 100);
     const QList<QPair<QString, QDoubleSpinBox *>> props = {
         {"X 位置 / m", x_}, {"Z 位置 / m", z_},   {"中心高度 / m", alt_},
         {"朝向 / °", yaw_}, {"宽度 / m", width_}, {"高度 / m", height_}};
     for (int i = 0; i < props.size(); ++i) {
-        grid->addWidget(label(props[i].first, "fieldLabel"), (i / 2) * 2, i % 2);
+        auto *field = label(props[i].first, "fieldLabel");
+        if (i == 4)
+            widthLabel_ = field;
+        if (i == 5)
+            heightLabel_ = field;
+        grid->addWidget(field, (i / 2) * 2, i % 2);
         grid->addWidget(props[i].second, (i / 2) * 2 + 1, i % 2);
         connect(props[i].second, &QDoubleSpinBox::editingFinished, this,
                 [this] { editSelection(); });
     }
     pl->addLayout(grid);
+    dimensions_ = label({}, "subtle");
+    dimensions_->setObjectName("componentDimensions");
+    dimensions_->setWordWrap(true);
+    pl->addWidget(dimensions_);
+    pl->addWidget(label("组件颜色", "fieldLabel"));
+    auto *colorRow = new QHBoxLayout;
+    color_ = new QComboBox;
+    color_->setObjectName("componentColor");
+    color_->setMinimumWidth(80);
+    for (const auto &entry : nativeBlockColors()) {
+        QPixmap swatch(18, 18);
+        swatch.fill(entry.color);
+        color_->addItem(QIcon(swatch), entry.name, entry.color.name());
+    }
+    color_->addItem("自定义颜色", QString());
+    colorRow->addWidget(color_, 1);
+    auto *customColor = button("调色", "tool");
+    customColor->setObjectName("customComponentColor");
+    colorRow->addWidget(customColor);
+    pl->addLayout(colorRow);
+    colorMapping_ = label({}, "subtle");
+    colorMapping_->setWordWrap(true);
+    pl->addWidget(colorMapping_);
+    connect(color_, &QComboBox::currentIndexChanged, this, [this, customColor](int index) {
+        if (updating_ || index < 0)
+            return;
+        const QString value = color_->itemData(index).toString();
+        if (value.isEmpty())
+            customColor->click();
+        else
+            editColor(QColor(value));
+    });
+    connect(customColor, &QPushButton::clicked, this, [this] {
+        QColor initial;
+        for (const auto &g : doc_.gates)
+            if (g.id == selected_)
+                initial = gateColor(g);
+        if (!initial.isValid())
+            return;
+        const QColor chosen = QColorDialog::getColor(initial, this, "选择组件颜色");
+        if (chosen.isValid())
+            editColor(chosen);
+        updateSelection(selected_);
+    });
     passSideLabel_ = label("绕柱通过侧", "fieldLabel");
     passSide_ = new QComboBox;
     passSide_->addItems({"右侧绕过", "左侧绕过"});
@@ -389,7 +439,9 @@ void StudioWindow::setupUi() {
                     g.extra.insert("passSide", index == 0 ? 1 : -1);
         });
     });
-    ll->addWidget(properties_);
+    // Keep the selected component's controls visible above project/import settings.
+    pl->addWidget(line());
+    ll->insertWidget(0, properties_);
     properties_->hide();
     ll->addStretch();
     auto *about = label("OPEN SOURCE / MIT\n无需注册 · 支持自带 API", "localNote");
@@ -510,14 +562,9 @@ void StudioWindow::setupUi() {
         QString type, title, sub;
         double w, h;
     };
-    const QList<Definition> defs = {{"standard", "标准门", "2.4 × 2.4 m", 2.4, 2.4},
-                                    {"start", "起终点门", "2.4 × 2.4 m", 2.4, 2.4},
-                                    {"standard", "宽门", "4.8 × 2.4 m", 4.8, 2.4},
-                                    {"standard", "窄门", "1.8 × 2.4 m", 1.8, 2.4},
-                                    {"standard", "高门", "2.4 × 3.6 m", 2.4, 3.6},
-                                    {"standard", "低门", "2.4 × 1.2 m", 2.4, 1.2},
-                                    {"pillar", "转向柱", "0.4 × 3.0 m", .4, 3.0},
-                                    {"standard", "微型门", "1.2 × 1.2 m", 1.2, 1.2}};
+    const QList<Definition> defs = {{"standard", "标准门", "中心距 3 × 3 m", 3.0, 3.0},
+                                    {"start", "起终点门", "中心距 3 × 3 m", 3.0, 3.0},
+                                    {"pillar", "转向柱", "0.1 × 3.2 m", .1, 3.2}};
     for (int i = 0; i < defs.size(); ++i) {
         const auto d = defs[i];
         auto *card = new GateCard(d.type, d.title, d.sub);
@@ -528,6 +575,9 @@ void StudioWindow::setupUi() {
         });
     }
     rl->addLayout(cards);
+    auto *stock = label("标准杆件长 3.2 m\n截面 0.1 × 0.1 m\n选中组件可改颜色和尺寸", "subtle");
+    stock->setWordWrap(true);
+    rl->addWidget(stock);
     rl->addStretch();
     auto *sample = button("加载示例赛道", "secondary");
     rl->addWidget(sample);
@@ -685,6 +735,7 @@ void StudioWindow::updateStats() {
 void StudioWindow::updateSelection(const QString &id) {
     if (updating_)
         return;
+    const bool revealProperties = selected_ != id || properties_->isHidden();
     selected_ = id;
     const Gate *gate = nullptr;
     int row = -1;
@@ -699,6 +750,13 @@ void StudioWindow::updateSelection(const QString &id) {
     properties_->setVisible(gate != nullptr);
     updating_ = true;
     const bool pillar = gate && gate->type == "pillar";
+    const auto frame = gate ? gateFrameMetrics(*gate) : GateFrameMetrics{};
+    widthLabel_->setText(pillar                  ? "柱体边长 / m"
+                         : frame.centerlineModel ? "横向中心距 / m"
+                                                 : "宽度 / m");
+    heightLabel_->setText(pillar                  ? "柱长 / m"
+                          : frame.centerlineModel ? "竖向中心距 / m"
+                                                  : "高度 / m");
     passSideLabel_->setVisible(pillar);
     passSide_->setVisible(pillar);
     if (pillar)
@@ -709,14 +767,44 @@ void StudioWindow::updateSelection(const QString &id) {
         gate ? QString("%1属性 · #%2").arg(gateTypeName(gate->type)).arg(row + 1)
              : "门架属性 · 未选择");
     if (gate) {
+        width_->setMinimum(pillar ? .01 : .2);
+        height_->setMinimum(pillar ? .1 : .2);
         x_->setValue(gate->position.x());
         z_->setValue(gate->position.y());
         alt_->setValue(gate->elevation);
         yaw_->setValue(gate->yaw);
         width_->setValue(gate->width);
         height_->setValue(gate->height);
+        const QColor tint = gateColor(*gate);
+        const int colorIndex = color_->findData(tint.name());
+        color_->setCurrentIndex(colorIndex >= 0 ? colorIndex : color_->count() - 1);
+        const auto nativeColor = nearestNativeBlockColor(tint);
+        colorMapping_->setText(
+            tint == nativeColor.color
+                ? QString("方块颜色：%1").arg(nativeColor.name)
+                : QString("自定义 %1 · 导出匹配：%2").arg(tint.name().toUpper(), nativeColor.name));
+        if (!pillar && !frame.centerlineModel)
+            colorMapping_->setText("导入原模型：此颜色用于编辑预览，导出保留原材质。");
+        if (pillar) {
+            dimensions_->setText(QString("截面 %1 × %1 m · 柱长 %2 m")
+                                     .arg(gate->width, 0, 'f', 2)
+                                     .arg(gate->height, 0, 'f', 2));
+        } else if (frame.centerlineModel) {
+            dimensions_->setText(
+                QString("杆件截面 %1 × %1 m\n横杆长 %2 m · 竖杆长 %3 m\n净开口 %4 × %5 m")
+                    .arg(frame.beamThickness, 0, 'f', 2)
+                    .arg(frame.horizontalBeamLength, 0, 'f', 2)
+                    .arg(frame.verticalBeamLength, 0, 'f', 2)
+                    .arg(frame.openingWidth, 0, 'f', 2)
+                    .arg(frame.openingHeight, 0, 'f', 2));
+        } else {
+            dimensions_->setText("导入组件：原模型尺寸约定");
+        }
     }
     order_->setCurrentRow(row);
+    if (gate && revealProperties)
+        if (auto *sidebar = findChild<QScrollArea *>("sidebar"))
+            sidebar->verticalScrollBar()->setValue(0);
     updating_ = false;
     statusBar()->showMessage(
         gate
@@ -724,6 +812,16 @@ void StudioWindow::updateSelection(const QString &id) {
                   .arg(row + 1)
                   .arg(gateTypeName(gate->type))
             : QString("先单击组件选中，再按住组件或光圈拖动 · 右键旋转视角 · 中键平移 · 滚轮缩放"));
+}
+void StudioWindow::editColor(const QColor &color) {
+    if (updating_ || selected_.isEmpty() || !color.isValid())
+        return;
+    const QString id = selected_;
+    edit("调整组件颜色", [id, color](TrackDocument &d) {
+        for (auto &g : d.gates)
+            if (g.id == id)
+                setGateColor(g, color);
+    });
 }
 void StudioWindow::editSelection() {
     if (updating_ || selected_.isEmpty())
@@ -744,13 +842,8 @@ void StudioWindow::editSelection() {
     });
 }
 void StudioWindow::addGate(const QString &type, QPointF p, double w, double h) {
-    Gate g;
-    g.id = newGateId();
-    g.type = type;
+    Gate g = makeGate(type, w, h);
     g.position = p;
-    g.width = w;
-    g.height = h;
-    g.elevation = h / 2;
     selected_ = g.id;
     edit("放置门架", [g](TrackDocument &d) { d.gates.append(g); });
 }
@@ -1070,6 +1163,9 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
         qWarning() << "Recognition count" << result.detectedCount << result.warnings;
         return false;
     }
+    if (result.document.gates.isEmpty() ||
+        !gateFrameMetrics(result.document.gates[0]).centerlineModel)
+        return false;
     TrackDocument before = doc_;
     applyDocument(result.document);
     auto beforeEdit = doc_;
@@ -1086,6 +1182,22 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
         return false;
     undo_.undo();
     const QString project = dir + "/example.otproj", trk = dir + "/example.trk";
+    // Exercise the actual property control, document undo, and persisted color together.
+    selected_ = doc_.gates[0].id;
+    canvas_->selectGate(selected_);
+    const QColor originalColor = gateColor(doc_.gates[0]);
+    const int redIndex = color_->findData(QString("#e60000"));
+    if (redIndex < 0)
+        return false;
+    color_->setCurrentIndex(redIndex);
+    if (gateColor(doc_.gates[0]) != QColor("#e60000"))
+        return false;
+    undo_.undo();
+    if (gateColor(doc_.gates[0]) != originalColor)
+        return false;
+    undo_.redo();
+    if (gateColor(doc_.gates[0]) != QColor("#e60000"))
+        return false;
     if (!saveProject(project, doc_, &error)) {
         qWarning() << error;
         return false;
@@ -1120,6 +1232,7 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
                        {"projectRoundtrip", true},
                        {"trackCodecRoundtrip", true},
                        {"undoRedo", true},
+                       {"colorPropertyUndoRedo", true},
                        {"zoom200OperationsMs", zoomMs},
                        {"simulatorImportTested", false}};
     QFile file(dir + "/smoke-report.json");

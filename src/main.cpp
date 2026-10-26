@@ -3,10 +3,12 @@
 #include <QFile>
 #include <QIcon>
 #include <QLibrary>
+#include <QListWidget>
 #include <QPalette>
 #include <QScreen>
 #include <QStyleFactory>
 #include <QTimer>
+#include <algorithm>
 
 namespace {
 void applyWindowCaption(QWidget &window) {
@@ -31,7 +33,7 @@ void applyWindowCaption(QWidget &window) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("OpenTrack Studio");
-    app.setApplicationVersion("0.1.1");
+    app.setApplicationVersion("0.1.2");
     app.setOrganizationName("OpenTrackStudio");
     app.setStyle(QStyleFactory::create("Fusion"));
     app.setFont(QFont("Microsoft YaHei UI", 9));
@@ -45,10 +47,22 @@ int main(int argc, char **argv) {
     QFile theme(":/theme/studio.qss");
     if (theme.open(QIODevice::ReadOnly))
         app.setStyleSheet(QString::fromUtf8(theme.readAll()));
+    const QStringList args = app.arguments();
     ot::StudioWindow window;
+    if (args.size() >= 3 && args[1] == "--render-demo") {
+        // Automated screenshots must not take keyboard focus from another app.
+        window.setAttribute(Qt::WA_ShowWithoutActivating);
+        for (auto *screen : app.screens())
+            if (screen != app.primaryScreen()) {
+                const QRect available = screen->availableGeometry();
+                window.resize(std::min(window.width(), available.width() - 40),
+                              std::min(window.height(), available.height() - 40));
+                window.move(available.topLeft() + QPoint(20, 20));
+                break;
+            }
+    }
     window.show();
     applyWindowCaption(window);
-    const QStringList args = app.arguments();
     int result = 0;
     if (args.size() >= 3 && args[1] == "--smoke-test") {
         QTimer::singleShot(200, &window, [&] {
@@ -56,6 +70,10 @@ int main(int argc, char **argv) {
             app.exit(result);
         });
     } else if (args.size() >= 3 && args[1] == "--render-demo") {
+        if (args.size() >= 4 && !window.openPath(args[3]))
+            return 1;
+        if (auto *order = window.findChild<QListWidget *>("orderList"))
+            order->setCurrentRow(0);
         QTimer::singleShot(800, &window, [&] {
             result = window.screen()->grabWindow(window.winId()).save(args[2]) ? 0 : 1;
             app.exit(result);

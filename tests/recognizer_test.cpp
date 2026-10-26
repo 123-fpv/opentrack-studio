@@ -81,8 +81,14 @@ int main(int argc, char **argv) {
           "downsampling does not change the user-provided scale");
 
     const auto scaled = ot::recognizeTrack(plan());
-    check(scaled.document.metersPerPixel > 0.07 && scaled.document.metersPerPixel < 0.13,
-          "automatic scale estimates a 2.4 metre gate width");
+    check(scaled.document.metersPerPixel > 0.1 && scaled.document.metersPerPixel < 0.16,
+          "automatic scale estimates the 3.0 metre frame centreline spacing");
+    for (const auto &component : scaled.document.gates) {
+        check(component.width == 3.0 && component.height == 3.0 && component.elevation == 1.6,
+              "newly recognized frames use 3m centrelines and ground-standing 3.2m beams");
+        check(component.extra.value("frameGeometry").toString() == "centerline-v1",
+              "newly recognized frames opt in to accurate block-beam geometry");
+    }
     QImage withWide = plan();
     {
         QPainter painter(&withWide);
@@ -95,7 +101,7 @@ int main(int argc, char **argv) {
     for (const auto &gate : wide.document.gates) {
         check(gate.type != QStringLiteral("double"),
               "recognition does not invent an unsupported double prefab");
-        if (gate.width > 2.4) {
+        if (gate.width > 3.0) {
             foundWide = true;
             check(gate.type == QStringLiteral("standard"),
                   "uncertain wide gate remains an exportable standard frame");
@@ -122,9 +128,8 @@ int main(int argc, char **argv) {
         if (component.type != QStringLiteral("pillar"))
             continue;
         foundPillar = true;
-        check(component.width >= 0.2 && component.width <= 0.8 && component.height == 3.0 &&
-                  component.elevation == 1.5,
-              "turning pillar has a conservative thickness and disclosed estimated height");
+        check(component.width == 0.1 && component.height == 3.2 && component.elevation == 1.6,
+              "new turning pillar uses the confirmed 0.1m square section and 3.2m beam");
         check(component.extra.value("recognition").toObject().value("heightInferred").toBool(),
               "pillar height remains explicitly inferred");
         check(component.extra.value("passSide").toInt() == 1,
