@@ -1,0 +1,59 @@
+name: Windows build and tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python for Qt installation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Prepare portable folder
+        shell: pwsh
+        run: ./scripts/package.ps1 -QtDir "$env:QT_ROOT_DIR" -BuildDir build -OutputDir dist/OpenTrackStudio-Windows
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: Compress-Archive -LiteralPath dist/OpenTrackStudio-Windows -DestinationPath dist/OpenTrackStudio-Windows-x64.zip
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenTrackStudio-Windows-x64
+          path: dist/OpenTrackStudio-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

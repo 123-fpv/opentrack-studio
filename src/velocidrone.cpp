@@ -1,0 +1,450 @@
+#include "velocidrone.h"
+#include "document.h"
+
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QQuaternion>
+#include <QSaveFile>
+#include <QVector3D>
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+// Windows defines the types required by BCrypt. Keep this include order.
+// clang-format off
+#include <windows.h>
+#include <bcrypt.h>
+// clang-format on
+#endif
+
+namespace ot {
+namespace {
+constexpr qsizetype MaxTrackBytes = 32 * 1024 * 1024;
+constexpr int MaxGates = 20000;
+constexpr double NominalGateAperture = 2.4;
+const QString NativeObject = QStringLiteral("velocidroneObject");
+const QString NativeBaseline = QStringLiteral("velocidroneBaseline");
+const QString NativeRoot = QStringLiteral("velocidroneRoot");
+const QString NativeScene = QStringLiteral("velocidroneSceneId");
+
+bool fail(QString *error, const QString &message) {
+    if (error)
+        *error = message;
+    return false;
+}
+
+bool crypt(const QByteArray &input, bool encrypt, QByteArray *output, QString *error) {
+#ifdef Q_OS_WIN
+    struct Algorithm {
+        BCRYPT_ALG_HANDLE value = nullptr;
+        ~Algorithm() {
+            if (value)
+                BCryptCloseAlgorithmProvider(value, 0);
+        }
+    } algorithm;
+    struct Key {
+        BCRYPT_KEY_HANDLE value = nullptr;
+        ~Key() {
+            if (value)
+                BCryptDestroyKey(value);
+        }
+    };
+    const auto ok = [](NTSTATUS status) { return status >= 0; };
+    if (!ok(BCryptOpenAlgorithmProvider(&algorithm.value, BCRYPT_AES_ALGORITHM, nullptr, 0)))
+        return fail(error, QStringLiteral("无法初始化 Windows AES 加密服务。"));
+    if (!ok(BCryptSetProperty(
+            algorithm.value, BCRYPT_CHAINING_MODE,
+            reinterpret_cast<PUCHAR>(const_cast<wchar_t *>(BCRYPT_CHAIN_MODE_ECB)),
+            sizeof(BCRYPT_CHAIN_MODE_ECB), 0)))
+        return fail(error, QStringLiteral("无法设置赛道文件所需的 AES 模式。"));
+    ULONG objectLength = 0, returnedLength = 0;
+    if (!ok(BCryptGetProperty(algorithm.value, BCRYPT_OBJECT_LENGTH,
+                              reinterpret_cast<PUCHAR>(&objectLength), sizeof(objectLength),
+                              &returnedLength, 0)))
+        return fail(error, QStringLiteral("无法读取 Windows AES 参数。"));
+    QByteArray object(static_cast<qsizetype>(objectLength), '\0');
+    Key key; // Destroy the handle before releasing its backing object buffer.
+    // A public interoperability key, not a user credential.
+    QByteArray keyBytes("VelocidrrdicoleV", 16);
+    if (!ok(BCryptGenerateSymmetricKey(
+            algorithm.value, &key.value, reinterpret_cast<PUCHAR>(object.data()), objectLength,
+            reinterpret_cast<PUCHAR>(keyBytes.data()), static_cast<ULONG>(keyBytes.size()), 0)))
+        return fail(error, QStringLiteral("无法创建赛道文件加密密钥。"));
+    auto operate = [&](PUCHAR destination, ULONG capacity, ULONG *length) {
+        PUCHAR source = reinterpret_cast<PUCHAR>(const_cast<char *>(input.constData()));
+        if (encrypt)
+            return BCryptEncrypt(key.value, source, static_cast<ULONG>(input.size()), nullptr,
+                                 nullptr, 0, destination, capacity, length, BCRYPT_BLOCK_PADDING);
+        return BCryptDecrypt(key.value, source, static_cast<ULONG>(input.size()), nullptr, nullptr,
+                             0, destination, capacity, length, BCRYPT_BLOCK_PADDING);
+    };
+    ULONG needed = 0;
+    if (!ok(operate(nullptr, 0, &needed)))
+        return fail(error, QStringLiteral("赛道文件解密失败：文件损坏或不是受支持的 .trk 格式。"));
+    QByteArray result(static_cast<qsizetype>(needed), '\0');
+    ULONG written = 0;
+    if (!ok(operate(reinterpret_cast<PUCHAR>(result.data()), needed, &written)))
+        return fail(error, QStringLiteral("赛道文件校验失败：加密数据或填充不完整。"));
+    result.resize(static_cast<qsizetype>(written));
+    *output = std::move(result);
+    return true;
+#else
+    Q_UNUSED(input)
+    Q_UNUSED(encrypt)
+    Q_UNUSED(output)
+    return fail(error,
+                QStringLiteral("此版本的原生 .trk 导入导出仅支持 Windows。工程文件不受影响。"));
+#endif
+}
+
+int sceneryId(const TrackDocument &document) {
+    if (document.scenery == QStringLiteral("Football Stadium"))
+        return 8;
+    if (document.scenery == QStringLiteral("Empty Scene Day"))
+        return 16;
+    if (document.scenery == QStringLiteral("Empty Scene Night"))
+        return 17;
+    if (document.scenery == QStringLiteral("Sports Hall"))
+        return 21;
+    if (document.scenery == QStringLiteral("Warehouse"))
+        return 19;
+    if (document.scenery == QStringLiteral("Countryside"))
+        return 12;
+    if (document.scenery.startsWith(QStringLiteral("Scene "))) {
+        bool valid = false;
+        const int id = document.scenery.mid(6).toInt(&valid);
+        if (valid && id > 0)
+            return id;
+    }
+    return 0;
+}
+
+QString sceneryName(int id) {
+    switch (id) {
+    case 8:
+        return QStringLiteral("Football Stadium");
+    case 12:
+        return QStringLiteral("Countryside");
+    case 16:
+        return QStringLiteral("Empty Scene Day");
+    case 17:
+        return QStringLiteral("Empty Scene Night");
+    case 19:
+        return QStringLiteral("Warehouse");
+    case 21:
+        return QStringLiteral("Sports Hall");
+    default:
+        return QStringLiteral("Scene %1").arg(id);
+    }
+}
+
+bool finiteGate(const Gate &gate) {
+    return std::isfinite(gate.position.x()) && std::isfinite(gate.position.y()) &&
+           std::isfinite(gate.elevation) && std::isfinite(gate.width) &&
+           std::isfinite(gate.height) && std::isfinite(gate.yaw) &&
+           std::abs(gate.position.x()) <= 1000000 && std::abs(gate.position.y()) <= 1000000 &&
+           std::abs(gate.elevation) <= 1000000 && std::abs(gate.yaw) < 1000000000 &&
+           gate.width >= 0.02 && gate.width <= 1000 && gate.height >= 0.02 && gate.height <= 1000;
+}
+
+QJsonObject baseline(const Gate &gate) {
+    return {{QStringLiteral("x"), gate.position.x()},
+            {QStringLiteral("z"), gate.position.y()},
+            {QStringLiteral("elevation"), gate.elevation},
+            {QStringLiteral("width"), gate.width},
+            {QStringLiteral("height"), gate.height},
+            {QStringLiteral("yaw"), gate.yaw},
+            {QStringLiteral("type"), gate.type}};
+}
+
+bool same(double a, double b) {
+    return std::abs(a - b) < 1e-8;
+}
+
+bool numericArray(const QJsonValue &value, int count, QJsonArray *result,
+                  double maximum = std::numeric_limits<int>::max()) {
+    if (!value.isArray())
+        return false;
+    const auto array = value.toArray();
+    if (array.size() != count)
+        return false;
+    for (const auto &item : array) {
+        if (!item.isDouble() || !std::isfinite(item.toDouble()) ||
+            std::abs(item.toDouble()) > maximum)
+            return false;
+    }
+    *result = array;
+    return true;
+}
+
+QQuaternion quaternion(const QJsonArray &rotation) {
+    return QQuaternion(static_cast<float>(rotation[0].toDouble() / 1000.0),
+                       static_cast<float>(rotation[1].toDouble() / 1000.0),
+                       static_cast<float>(rotation[2].toDouble() / 1000.0),
+                       static_cast<float>(rotation[3].toDouble() / 1000.0))
+        .normalized();
+}
+
+QJsonArray rotationArray(const QQuaternion &rotation) {
+    const auto q = rotation.normalized();
+    return {qRound(q.scalar() * 1000.0), qRound(q.x() * 1000.0), qRound(q.y() * 1000.0),
+            qRound(q.z() * 1000.0)};
+}
+
+bool makeNativeObject(const Gate &gate, int index, bool isStart, QJsonObject *result,
+                      QString *error) {
+    if (!finiteGate(gate))
+        return fail(error,
+                    QStringLiteral("第 %1 个组件的位置、角度或尺寸超出有效范围。 ").arg(index + 1));
+    QJsonObject object = gate.extra.value(NativeObject).toObject();
+    const QJsonObject previous = gate.extra.value(NativeBaseline).toObject();
+    const bool hasNative = !object.isEmpty() && !previous.isEmpty();
+    int prefab = 0;
+    if (hasNative && previous.value(QStringLiteral("type")).toString() == gate.type) {
+        prefab = object.value(QStringLiteral("prefab")).toInt();
+    } else if (gate.type == QStringLiteral("standard") || gate.type == QStringLiteral("start")) {
+        prefab = 285;
+    } else if (gate.type == QStringLiteral("flag")) {
+        prefab = 170;
+    } else {
+        return fail(error, QStringLiteral("第 %1 个组件“%2”暂不支持新建后导出为原生赛道。"
+                                          "请改用标准门、起终点门或旗杆；导入的原生组件可以保留。")
+                               .arg(index + 1)
+                               .arg(gate.type));
+    }
+    QJsonObject transform;
+    if (hasNative && previous.value(QStringLiteral("type")).toString() == gate.type) {
+        transform = object.value(QStringLiteral("trans")).toObject();
+        QJsonArray rawPosition, rawRotation, rawScale;
+        if (!numericArray(transform.value(QStringLiteral("pos")), 3, &rawPosition) ||
+            !numericArray(transform.value(QStringLiteral("rot")), 4, &rawRotation, 1000000) ||
+            !numericArray(transform.value(QStringLiteral("scale")), 3, &rawScale, 1000000))
+            return fail(error, QStringLiteral("原生组件附加数据损坏，无法安全导出。"));
+        const double oldHeight = previous.value(QStringLiteral("height")).toDouble();
+        const double oldWidth = previous.value(QStringLiteral("width")).toDouble();
+        if (!(oldHeight > 0 && oldWidth > 0))
+            return fail(error, QStringLiteral("原生组件的尺寸基准无效。"));
+        const bool changedWidth = !same(gate.width, oldWidth);
+        const bool changedHeight = !same(gate.height, oldHeight);
+        const bool changedYaw = !same(gate.yaw, previous.value(QStringLiteral("yaw")).toDouble());
+        const bool changedPosition =
+            !same(gate.position.x(), previous.value(QStringLiteral("x")).toDouble()) ||
+            !same(gate.position.y(), previous.value(QStringLiteral("z")).toDouble()) ||
+            !same(gate.elevation, previous.value(QStringLiteral("elevation")).toDouble());
+        QQuaternion orientation = quaternion(rawRotation);
+        if (changedYaw) {
+            orientation = QQuaternion::fromAxisAndAngle(
+                              0, 1, 0,
+                              static_cast<float>(
+                                  gate.yaw - previous.value(QStringLiteral("yaw")).toDouble())) *
+                          orientation;
+            transform.insert(QStringLiteral("rot"), rotationArray(orientation));
+        }
+        if (changedWidth || changedHeight) {
+            rawScale[0] = qRound(rawScale[0].toDouble() * gate.width / oldWidth);
+            rawScale[1] = qRound(rawScale[1].toDouble() * gate.height / oldHeight);
+            transform.insert(QStringLiteral("scale"), rawScale);
+        }
+        if (changedPosition || changedHeight || changedYaw) {
+            const auto offset =
+                orientation.rotatedVector(QVector3D(0, static_cast<float>(gate.height / 2), 0));
+            transform.insert(QStringLiteral("pos"),
+                             QJsonArray{qRound((gate.position.x() - offset.x()) * 100),
+                                        qRound((gate.elevation - offset.y()) * 100),
+                                        qRound((gate.position.y() - offset.z()) * 100)});
+        }
+    } else {
+        const QQuaternion orientation =
+            QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate.yaw));
+        const bool flag = gate.type == QStringLiteral("flag");
+        transform = {
+            {QStringLiteral("pos"), QJsonArray{qRound(gate.position.x() * 100),
+                                               qRound((gate.elevation - gate.height / 2) * 100),
+                                               qRound(gate.position.y() * 100)}},
+            {QStringLiteral("rot"), rotationArray(orientation)},
+            {QStringLiteral("scale"),
+             flag ? QJsonArray{100, 100, 100}
+                  : QJsonArray{qRound(gate.width / NominalGateAperture * 100),
+                               qRound(gate.height / NominalGateAperture * 100), 100}}};
+    }
+    object.insert(QStringLiteral("prefab"), prefab);
+    object.insert(QStringLiteral("trans"), transform);
+    object.insert(QStringLiteral("gate"), index);
+    // Some native courses have separate start and finish semantics. Preserve
+    // these flags unless the user actually changed this component's type.
+    if (!hasNative || previous.value(QStringLiteral("type")).toString() != gate.type) {
+        object.insert(QStringLiteral("start"), isStart);
+        object.insert(QStringLiteral("finish"), isStart);
+    }
+    *result = object;
+    return true;
+}
+} // namespace
+
+bool exportVelocidrone(const QString &path, const TrackDocument &document, QString *error) {
+    if (error)
+        error->clear();
+    if (document.gates.isEmpty() || document.gates.size() > MaxGates)
+        return fail(error, QStringLiteral("原生赛道需要 1 至 %1 个门序组件。 ").arg(MaxGates));
+    const int scene = sceneryId(document);
+    if (scene <= 0)
+        return fail(error, QStringLiteral("此场景尚无经过核对的 VelociDrone 编号，请选择 Football "
+                                          "Stadium 或 Empty Scene Day。"));
+    int startingIndex = -1;
+    for (qsizetype i = 0; i < document.gates.size(); ++i) {
+        if (document.gates[i].type == QStringLiteral("start")) {
+            if (startingIndex >= 0)
+                return fail(error, QStringLiteral("只能有一个起终点门。"));
+            startingIndex = static_cast<int>(i);
+        }
+    }
+    if (startingIndex < 0)
+        startingIndex = 0;
+    QJsonArray gates;
+    for (qsizetype i = 0; i < document.gates.size(); ++i) {
+        QJsonObject object;
+        if (!makeNativeObject(document.gates[i], static_cast<int>(i), i == startingIndex, &object,
+                              error))
+            return false;
+        gates.append(object);
+    }
+    QJsonObject layout = document.extra.value(NativeRoot).toObject();
+    layout.remove(QStringLiteral("meta"));
+    layout.insert(QStringLiteral("gates"), gates);
+    if (!layout.value(QStringLiteral("barriers")).isArray())
+        layout.insert(QStringLiteral("barriers"), QJsonArray{});
+    QString name = document.name;
+    name.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    name.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    name.replace(QChar(0), QLatin1Char(' '));
+    if (name.trimmed().isEmpty())
+        name = QStringLiteral("OpenTrack Studio");
+    const QByteArray plain = QByteArray::number(scene) + '\n' + name.toUtf8() + '\n' +
+                             QJsonDocument(layout).toJson(QJsonDocument::Compact) + "\n0\n0";
+    if (plain.size() > MaxTrackBytes)
+        return fail(error, QStringLiteral("赛道数据超过 32 MB 限制。"));
+    QByteArray encrypted;
+    if (!crypt(plain, true, &encrypted, error))
+        return false;
+    QSaveFile destination(path);
+    const QByteArray encoded = encrypted.toBase64();
+    if (!destination.open(QIODevice::WriteOnly) || destination.write(encoded) != encoded.size() ||
+        !destination.commit())
+        return fail(error, QStringLiteral("无法保存原生赛道：%1").arg(destination.errorString()));
+    return true;
+}
+
+bool importVelocidrone(const QString &path, TrackDocument *document, QString *error) {
+    if (error)
+        error->clear();
+    if (!document)
+        return fail(error, QStringLiteral("没有可接收导入内容的工程。"));
+    QFile source(path);
+    if (!source.open(QIODevice::ReadOnly))
+        return fail(error, QStringLiteral("无法打开赛道文件：%1").arg(source.errorString()));
+    if (source.size() <= 0 || source.size() > MaxTrackBytes * 2)
+        return fail(error, QStringLiteral("赛道文件为空或超过大小限制。"));
+    QByteArray encoded = source.readAll();
+    encoded.replace("\r", "");
+    encoded.replace("\n", "");
+    encoded.replace(" ", "");
+    encoded.replace("\t", "");
+    const auto decoded =
+        QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
+    if (!decoded || decoded.decoded.isEmpty() || decoded.decoded.size() % 16 != 0 ||
+        decoded.decoded.size() > MaxTrackBytes + 16)
+        return fail(error,
+                    QStringLiteral("不是有效的原生 .trk 文件：Base64 数据或 AES 区块长度错误。"));
+    QByteArray plain;
+    if (!crypt(decoded.decoded, false, &plain, error))
+        return false;
+    if (plain.startsWith("\xEF\xBB\xBF"))
+        plain.remove(0, 3);
+    const qsizetype firstLine = plain.indexOf('\n');
+    const qsizetype secondLine = firstLine < 0 ? -1 : plain.indexOf('\n', firstLine + 1);
+    const qsizetype jsonStart = secondLine < 0 ? -1 : plain.indexOf('{', secondLine + 1);
+    const qsizetype jsonEnd = plain.lastIndexOf('}');
+    if (firstLine <= 0 || secondLine <= firstLine || jsonStart < 0 || jsonEnd < jsonStart)
+        return fail(error, QStringLiteral("原生赛道缺少场景、名称或 JSON 内容。"));
+    bool validScene = false;
+    const int scene = plain.left(firstLine).trimmed().toInt(&validScene);
+    if (!validScene || scene <= 0)
+        return fail(error, QStringLiteral("原生赛道场景编号无效。"));
+    QJsonParseError parseError;
+    const auto parsed =
+        QJsonDocument::fromJson(plain.mid(jsonStart, jsonEnd - jsonStart + 1), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !parsed.isObject())
+        return fail(error, QStringLiteral("原生赛道 JSON 无效：%1").arg(parseError.errorString()));
+    const auto layout = parsed.object();
+    const auto array = layout.value(QStringLiteral("gates")).toArray();
+    if (!layout.value(QStringLiteral("gates")).isArray() || array.isEmpty() ||
+        array.size() > MaxGates)
+        return fail(error, QStringLiteral("原生赛道缺少有效门序。"));
+    TrackDocument imported;
+    imported.name =
+        QString::fromUtf8(plain.mid(firstLine + 1, secondLine - firstLine - 1)).trimmed();
+    imported.scenery = sceneryName(scene);
+    imported.extra.insert(NativeRoot, layout);
+    imported.extra.insert(NativeScene, scene);
+    struct OrderedGate {
+        int index;
+        Gate gate;
+    };
+    QVector<OrderedGate> ordered;
+    for (qsizetype i = 0; i < array.size(); ++i) {
+        const auto object = array[i].toObject();
+        const auto transform = object.value(QStringLiteral("trans")).toObject();
+        QJsonArray position, rotation, scale;
+        if (!object.value(QStringLiteral("prefab")).isDouble() ||
+            object.value(QStringLiteral("prefab")).toInt() <= 0 ||
+            !numericArray(transform.value(QStringLiteral("pos")), 3, &position) ||
+            !numericArray(transform.value(QStringLiteral("rot")), 4, &rotation, 1000000) ||
+            !numericArray(transform.value(QStringLiteral("scale")), 3, &scale, 1000000) ||
+            scale[0].toDouble() <= 0 || scale[1].toDouble() <= 0 || scale[2].toDouble() <= 0)
+            return fail(error, QStringLiteral("原生赛道第 %1 个组件的变换数据无效。").arg(i + 1));
+        double norm = 0;
+        for (const auto &value : rotation)
+            norm += value.toDouble() * value.toDouble();
+        if (norm < 1)
+            return fail(error, QStringLiteral("原生赛道含有无效的零旋转四元数。"));
+        Gate gate;
+        gate.id = newGateId();
+        const int prefab = object.value(QStringLiteral("prefab")).toInt();
+        if (object.value(QStringLiteral("start")).toBool())
+            gate.type = QStringLiteral("start");
+        else if (prefab == 170 || prefab == 2231 || prefab == 2232)
+            gate.type = QStringLiteral("flag");
+        else if (prefab == 286)
+            gate.type = QStringLiteral("dive");
+        else
+            gate.type = QStringLiteral("standard");
+        gate.width = NominalGateAperture * scale[0].toDouble() / 100.0;
+        gate.height = NominalGateAperture * scale[1].toDouble() / 100.0;
+        const auto orientation = quaternion(rotation);
+        const auto offset =
+            orientation.rotatedVector(QVector3D(0, static_cast<float>(gate.height / 2), 0));
+        gate.position = QPointF(position[0].toDouble() / 100 + offset.x(),
+                                position[2].toDouble() / 100 + offset.z());
+        gate.elevation = position[1].toDouble() / 100 + offset.y();
+        const auto forward = orientation.rotatedVector(QVector3D(0, 0, 1));
+        gate.yaw = std::atan2(forward.x(), forward.z()) * 180.0 / 3.14159265358979323846;
+        gate.label = QStringLiteral("原生组件 #%1").arg(prefab);
+        gate.extra.insert(NativeObject, object);
+        gate.extra.insert(NativeBaseline, baseline(gate));
+        const int order = object.value(QStringLiteral("gate")).toInt(static_cast<int>(i));
+        ordered.append({order, std::move(gate)});
+    }
+    std::stable_sort(ordered.begin(), ordered.end(),
+                     [](const OrderedGate &a, const OrderedGate &b) { return a.index < b.index; });
+    for (const auto &entry : ordered)
+        imported.gates.append(entry.gate);
+    *document = std::move(imported);
+    return true;
+}
+} // namespace ot

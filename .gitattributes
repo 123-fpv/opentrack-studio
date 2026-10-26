@@ -1,0 +1,12 @@
+* text=auto
+*.cpp text eol=lf
+*.h text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.svg text eol=lf
+*.qrc text eol=lf
+*.rc text eol=lf
+*.otproj text eol=lf
+*.trk -text
+*.png -text
+*.ico -text
