@@ -33,7 +33,7 @@ void applyWindowCaption(QWidget &window) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("OpenTrack Studio");
-    app.setApplicationVersion("0.1.2");
+    app.setApplicationVersion("0.1.3");
     app.setOrganizationName("OpenTrackStudio");
     app.setStyle(QStyleFactory::create("Fusion"));
     app.setFont(QFont("Microsoft YaHei UI", 9));
@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
         app.setStyleSheet(QString::fromUtf8(theme.readAll()));
     const QStringList args = app.arguments();
     ot::StudioWindow window;
-    if (args.size() >= 3 && args[1] == "--render-demo") {
+    if (args.size() >= 3 && (args[1] == "--render-demo" || args[1] == "--smoke-test")) {
         // Automated screenshots must not take keyboard focus from another app.
         window.setAttribute(Qt::WA_ShowWithoutActivating);
         for (auto *screen : app.screens())

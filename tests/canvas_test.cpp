@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QMouseEvent>
+#include <QPainter>
 #include <cmath>
 #include <iostream>
 
@@ -29,10 +30,41 @@ void drag(ot::TrackCanvas &canvas, QPointF from, QPointF to) {
     mouse(canvas, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
     QApplication::processEvents(); // Gesture completion is queued to survive item rebuilding.
 }
+
+QImage symbol(const QString &type, bool selected = false, const QColor &color = QColor("#4b4b4b")) {
+    QImage image(192, 168, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    ot::paintGateSymbol(&painter, QRectF(0, 0, image.width(), image.height()), type, selected,
+                        color);
+    return image;
+}
 } // namespace
 
 int main(int argc, char **argv) {
     QApplication application(argc, argv);
+    QList<QImage> glyphs;
+    for (const auto &type :
+         {QStringLiteral("standard"), QStringLiteral("double"), QStringLiteral("triple"),
+          QStringLiteral("ladder"), QStringLiteral("cube"), QStringLiteral("cube-stack")}) {
+        const auto neutral = symbol(type);
+        for (const auto &previous : glyphs)
+            require(neutral != previous, "compound glyphs are visually distinct from other types");
+        glyphs.append(neutral);
+        const auto colored = symbol(type, true, QColor("#e60000"));
+        int tintedPixels = 0;
+        bool monochrome = true;
+        for (int y = 0; y < neutral.height(); ++y)
+            for (int x = 0; x < neutral.width(); ++x) {
+                const auto a = neutral.pixelColor(x, y), b = colored.pixelColor(x, y);
+                if (a.alpha() > 16 && (a.red() != a.green() || a.green() != a.blue()))
+                    monochrome = false;
+                if (b.alpha() > 128 && b.red() > b.green() * 2 && b.red() > b.blue() * 2)
+                    ++tintedPixels;
+            }
+        require(monochrome, "default gate glyphs retain the neutral library palette");
+        require(tintedPixels > 50, "selected glyphs retain the component's chosen color");
+    }
     ot::TrackDocument document;
     ot::Gate gate;
     gate.id = QStringLiteral("two-step-gate");
@@ -80,6 +112,6 @@ int main(int argc, char **argv) {
     require(events == 0, "selection bridge is a no-op for an already selected id");
     if (!failures)
         std::cout << "PASS: 2D two-step selection, halo, drag threshold, snapped movement and undo "
-                     "gestures.\n";
+                     "gestures; distinct compound glyphs and color retention.\n";
     return failures ? 1 : 0;
 }

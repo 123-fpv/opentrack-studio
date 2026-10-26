@@ -16,7 +16,7 @@ QVector<NativeBlockColor> nativeBlockColors();
 // a native prefab; it does not add an undocumented RGB property to .trk files.
 NativeBlockColor nearestNativeBlockColor(const QColor &color);
 
-// New centerline frames use four physical colored block barriers and one
+// New centerline frames/groups use physical colored stock-beam barriers and one
 // invisible opening checkpoint. Pillars use a solid block with an adjacent
 // checkpoint. Legacy native models remain intact.
 // No simulator account or network is used.

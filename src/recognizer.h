@@ -6,10 +6,11 @@
 
 namespace ot {
 
-// Local, deterministic recognition of coloured gate symbols in overhead plans.
-// It does not reconstruct heights, identify arbitrary photographs, or recover
-// authoritative checkpoint order from an unannotated picture. Thin turning
-// markers become estimated solid pillars, not flag assets.
+// Local recognition of schematic symbols. Dark outlined plans with a magenta
+// racing line use obstacle shapes and the drawn route graph, including compound
+// and edge-on gates. Blue-icon plans retain the simple detector below. Heights,
+// compound internal passes and any unreadable route require human review;
+// arbitrary photographs are outside this local recognizer's scope.
 struct RecognitionOptions {
     double metersPerPixel = 0.05;
     int minComponentPixels = 10;

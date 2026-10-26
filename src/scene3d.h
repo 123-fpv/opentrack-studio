@@ -4,6 +4,7 @@
 #include <QOpenGLWidget>
 #include <QPointF>
 #include <QString>
+#include <QVector3D>
 #include <functional>
 #include <memory>
 
@@ -15,6 +16,10 @@ class QWheelEvent;
 
 namespace ot {
 struct TrackDocument;
+
+// Editor display: X/Y is the ground plane and Z is vertical. Scene/native
+// storage remains X/Z on the ground and Y vertical for existing .otproj/.trk.
+QVector3D editorAxisDirection(Qt::Axis editorAxis);
 
 class Scene3D : public QOpenGLWidget, protected QOpenGLFunctions {
   public:

@@ -1,12 +1,16 @@
 #include "window.h"
 #include "aidialog.h"
+#include "imageimport.h"
 #include "recognizer.h"
 #include "scene3d.h"
 #include "velocidrone.h"
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QImageReader>
 #include <QJsonDocument>
+#include <QMimeData>
 #include <QSaveFile>
 #include <QtConcurrentRun>
 #include <QtWidgets>
@@ -14,6 +18,11 @@
 
 namespace ot {
 namespace {
+struct ImageWork {
+    RecognitionResult recognition;
+    QString error;
+    qint64 elapsedMs = 0;
+};
 bool sameDocument(const TrackDocument &a, const TrackDocument &b) {
     if (a.background.cacheKey() != b.background.cacheKey())
         return false;
@@ -293,13 +302,17 @@ void StudioWindow::setupUi() {
     ll->addWidget(stats);
     ll->addWidget(line());
     ll->addWidget(label("图片生成赛道", "sectionTitle"));
-    auto *import = button("导入平面图并识别", "secondary");
+    auto *import = button("拖入赛道图片\n或点击选择，自动生成", "imageDropZone");
+    import->setMinimumHeight(60);
+    import->setToolTip(
+        "支持 PNG / JPG / BMP；也可直接拖到 3D 场景或俯视图。多张照片进入 AI 草稿预览。");
+    dropZone_ = import;
     ll->addWidget(import);
     connect(import, &QPushButton::clicked, this, [this] { importImage(); });
-    imageStatus_ = label("支持 PNG / JPG / BMP\n请使用蓝色门架符号的俯视图", "subtle");
+    imageStatus_ = label("支持 PNG / JPG / BMP\n可拖到这里、3D 场景或俯视图", "subtle");
     imageStatus_->setWordWrap(true);
     ll->addWidget(imageStatus_);
-    auto *aiPhotos = button("照片生成赛道（AI）", "secondary");
+    auto *aiPhotos = button("AI 解析当前图 / 多张照片", "secondary");
     ll->addWidget(aiPhotos);
     connect(aiPhotos, &QPushButton::clicked, this, [this] { importPhotosWithAi(); });
     auto *advancedToggle = button("比例与底图设置  ▸", "tool");
@@ -366,7 +379,7 @@ void StudioWindow::setupUi() {
     width_ = number(.01, 100, .01);
     height_ = number(.1, 100);
     const QList<QPair<QString, QDoubleSpinBox *>> props = {
-        {"X 位置 / m", x_}, {"Z 位置 / m", z_},   {"中心高度 / m", alt_},
+        {"X 位置 / m", x_}, {"Y 位置 / m", z_},   {"Z 中心高度 / m", alt_},
         {"朝向 / °", yaw_}, {"宽度 / m", width_}, {"高度 / m", height_}};
     for (int i = 0; i < props.size(); ++i) {
         auto *field = label(props[i].first, "fieldLabel");
@@ -380,6 +393,30 @@ void StudioWindow::setupUi() {
                 [this] { editSelection(); });
     }
     pl->addLayout(grid);
+    passCell_ = new QWidget;
+    auto *passCellLayout = new QHBoxLayout(passCell_);
+    passCellLayout->setContentsMargins(0, 0, 0, 0);
+    passCellLayout->addWidget(label("通过格", "fieldLabel"));
+    passColumn_ = new QComboBox;
+    passLevel_ = new QComboBox;
+    passCellLayout->addWidget(passColumn_);
+    passCellLayout->addWidget(passLevel_);
+    pl->addWidget(passCell_);
+    const auto editCell = [this] {
+        if (updating_ || selected_.isEmpty())
+            return;
+        const QString id = selected_;
+        const int column = passColumn_->currentIndex(), level = passLevel_->currentIndex();
+        edit("调整组合门通过格", [id, column, level](TrackDocument &d) {
+            for (auto &gate : d.gates)
+                if (gate.id == id) {
+                    gate.extra.insert("passColumn", std::max(0, column));
+                    gate.extra.insert("passLevel", std::max(0, level));
+                }
+        });
+    };
+    connect(passColumn_, &QComboBox::currentIndexChanged, this, editCell);
+    connect(passLevel_, &QComboBox::currentIndexChanged, this, editCell);
     dimensions_ = label({}, "subtle");
     dimensions_->setObjectName("componentDimensions");
     dimensions_->setWordWrap(true);
@@ -557,6 +594,9 @@ void StudioWindow::setupUi() {
     rl->addWidget(label("赛道组件", "sectionTitle"));
     rl->addWidget(label("选择组件，再点击画布放置", "subtle"));
     auto *cards = new QGridLayout;
+    auto *placementGroup = new QButtonGroup(right);
+    placementGroup->setObjectName("placementGroup");
+    placementGroup->setExclusive(true);
     cards->setSpacing(9);
     struct Definition {
         QString type, title, sub;
@@ -568,6 +608,7 @@ void StudioWindow::setupUi() {
     for (int i = 0; i < defs.size(); ++i) {
         const auto d = defs[i];
         auto *card = new GateCard(d.type, d.title, d.sub);
+        placementGroup->addButton(card);
         cards->addWidget(card, i / 2, i % 2);
         connect(card, &QPushButton::clicked, this, [this, d] {
             setPlacement(d.type, d.w, d.h);
@@ -575,6 +616,35 @@ void StudioWindow::setupUi() {
         });
     }
     rl->addLayout(cards);
+    auto *compoundToggle = button("组合门 · 展开", "tool");
+    compoundToggle->setCheckable(true);
+    rl->addWidget(compoundToggle);
+    auto *compoundPanel = new QWidget;
+    auto *compoundCards = new QGridLayout(compoundPanel);
+    compoundCards->setContentsMargins(0, 0, 0, 0);
+    compoundCards->setSpacing(9);
+    const QList<Definition> compounds = {{"double", "双连门", "两列单元", 3, 3},
+                                         {"triple", "三连门", "三列单元", 3, 3},
+                                         {"ladder", "日字门", "上下两层", 3, 3},
+                                         {"cube", "单层重力门", "立方框架", 3, 3},
+                                         {"cube-stack", "双层重力门", "两层立方框架", 3, 3}};
+    for (int i = 0; i < compounds.size(); ++i) {
+        const auto d = compounds[i];
+        auto *card = new GateCard(d.type, d.title, d.sub);
+        placementGroup->addButton(card);
+        compoundCards->addWidget(card, i / 2, i % 2);
+        connect(card, &QPushButton::clicked, this, [this, d] {
+            setPlacement(d.type, d.w, d.h);
+            notice_->setText("已选择" + d.title + " · 点击场景放置，选中后可调整通过格。");
+        });
+    }
+    compoundPanel->hide();
+    rl->addWidget(compoundPanel);
+    connect(compoundToggle, &QPushButton::toggled, this,
+            [compoundToggle, compoundPanel](bool open) {
+                compoundPanel->setVisible(open);
+                compoundToggle->setText(open ? "组合门 · 收起" : "组合门 · 展开");
+            });
     auto *stock = label("标准杆件长 3.2 m\n截面 0.1 × 0.1 m\n选中组件可改颜色和尺寸", "subtle");
     stock->setWordWrap(true);
     rl->addWidget(stock);
@@ -592,6 +662,21 @@ void StudioWindow::setupUi() {
     main->setSizes({252, 1030, 238});
     statusBar()->setSizeGripEnabled(false);
     statusBar()->showMessage("就绪 · 全部编辑在本机完成");
+    recognitionTimer_ = new QTimer(this);
+    recognitionTimer_->setInterval(200);
+    connect(recognitionTimer_, &QTimer::timeout, this, [this] {
+        if (recognizing_)
+            statusBar()->showMessage(
+                QString("正在本地解析图片… %1 秒 · 可继续查看场景")
+                    .arg((QDateTime::currentMSecsSinceEpoch() - recognitionStartedMs_) / 1000.0, 0,
+                         'f', 1));
+    });
+    const QList<QWidget *> dropTargets = {this, dropZone_, canvas_, canvas_->viewport(), scene3d_};
+    for (auto *target : dropTargets)
+        if (target) {
+            target->setAcceptDrops(true);
+            target->installEventFilter(this);
+        }
     zoom_ = label("100%");
     auto *minus = button("−", "zoomButton");
     auto *plus = button("＋", "zoomButton");
@@ -640,6 +725,13 @@ void StudioWindow::fitViews() {
         scene3d_->fitTrack();
 }
 void StudioWindow::setPlacement(const QString &type, double w, double h) {
+    if (type.isEmpty())
+        if (auto *group = findChild<QButtonGroup *>("placementGroup")) {
+            group->setExclusive(false);
+            for (auto *card : group->buttons())
+                card->setChecked(false);
+            group->setExclusive(true);
+        }
     canvas_->setPlacement(type, w, h);
     if (scene3d_)
         scene3d_->setPlacement(type, w, h);
@@ -689,7 +781,7 @@ void StudioWindow::applyDocument(const TrackDocument &d) {
     imageVisible_->setChecked(doc_.showBackground);
     recognizeButton_->setEnabled(!doc_.background.isNull() && !recognizing_);
     imageStatus_->setText(doc_.background.isNull()
-                              ? "支持 PNG / JPG / BMP\n请使用蓝色门架符号的俯视图"
+                              ? "支持 PNG / JPG / BMP\n可拖到小框、3D 场景或俯视图"
                               : QString("已导入 %1 × %2 像素\n可先调整比例，再识别生成")
                                     .arg(doc_.background.width())
                                     .arg(doc_.background.height()));
@@ -751,6 +843,19 @@ void StudioWindow::updateSelection(const QString &id) {
     updating_ = true;
     const bool pillar = gate && gate->type == "pillar";
     const auto frame = gate ? gateFrameMetrics(*gate) : GateFrameMetrics{};
+    passCell_->setVisible(gate && frame.centerlineModel && (frame.columns > 1 || frame.levels > 1));
+    if (gate) {
+        passColumn_->clear();
+        passLevel_->clear();
+        for (int i = 0; i < frame.columns; ++i)
+            passColumn_->addItem(QString("第 %1 列").arg(i + 1));
+        for (int i = 0; i < frame.levels; ++i)
+            passLevel_->addItem(QString("第 %1 层").arg(i + 1));
+        passColumn_->setCurrentIndex(gate->extra.value("passColumn").toInt(0));
+        passLevel_->setCurrentIndex(gate->extra.value("passLevel").toInt(0));
+        passColumn_->setVisible(frame.columns > 1);
+        passLevel_->setVisible(frame.levels > 1);
+    }
     widthLabel_->setText(pillar                  ? "柱体边长 / m"
                          : frame.centerlineModel ? "横向中心距 / m"
                                                  : "宽度 / m");
@@ -797,6 +902,13 @@ void StudioWindow::updateSelection(const QString &id) {
                     .arg(frame.verticalBeamLength, 0, 'f', 2)
                     .arg(frame.openingWidth, 0, 'f', 2)
                     .arg(frame.openingHeight, 0, 'f', 2));
+            if (frame.columns > 1 || frame.levels > 1 || frame.centerDepth > 0)
+                dimensions_->setText(
+                    dimensions_->text() +
+                    QString("\n组合外形 %1 × %2 × %3 m\n各格尺寸相同，复杂穿越顺序需校对")
+                        .arg(frame.outerWidth, 0, 'f', 2)
+                        .arg(frame.outerHeight, 0, 'f', 2)
+                        .arg(frame.outerDepth, 0, 'f', 2));
         } else {
             dimensions_->setText("导入组件：原模型尺寸约定");
         }
@@ -1000,8 +1112,16 @@ void StudioWindow::exportPng() {
     else
         statusBar()->showMessage("赛道预览已保存", 5000);
 }
-void StudioWindow::importPhotosWithAi() {
+void StudioWindow::importPhotosWithAi(const QStringList &paths) {
     AiVisionDialog dialog(this);
+    QTemporaryDir previewFiles;
+    if (!paths.isEmpty()) {
+        dialog.setImagePaths(paths);
+    } else if (!doc_.background.isNull() && previewFiles.isValid()) {
+        const QString current = previewFiles.filePath("当前赛道图.png");
+        if (doc_.background.save(current))
+            dialog.setImagePaths({current});
+    }
     if (dialog.exec() != QDialog::Accepted || !dialog.result().ok)
         return;
     const auto &result = dialog.result();
@@ -1018,47 +1138,18 @@ void StudioWindow::importImage() {
                                                    "赛道图片 (*.png *.jpg *.jpeg *.bmp)");
     if (p.isEmpty())
         return;
-    QFileInfo info(p);
-    if (info.size() > 80LL * 1024 * 1024) {
-        fail("图片超过 80 MB，请压缩或裁剪后导入。");
+    importImagePath(p);
+}
+void StudioWindow::importImagePath(const QString &path) {
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(path)});
+    const auto checked = inspectImageDrop(&mime);
+    if (!checked.supported) {
+        fail(checked.error);
         return;
     }
-    const quint64 imageRevision = revision_;
-    auto *watcher = new QFutureWatcher<QImage>(this);
-    statusBar()->showMessage("正在读取图片…");
-    connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, watcher, p, imageRevision] {
-        const auto image = watcher->result();
-        watcher->deleteLater();
-        if (imageRevision != revision_) {
-            statusBar()->showMessage("工程已改变，请重新导入图片", 4000);
-            return;
-        }
-        if (image.isNull()) {
-            fail("无法读取图片，或图片尺寸超过限制。");
-            return;
-        }
-        edit("导入赛道图片", [image](TrackDocument &d) {
-            d.background = image;
-            d.backgroundOrigin = QPointF(-image.width() * d.metersPerPixel / 2,
-                                         -image.height() * d.metersPerPixel / 2);
-            d.showBackground = true;
-        });
-        fitViews();
-        notice_->setText("已导入 " + QFileInfo(p).fileName() +
-                         " · 点击左侧“识别图片并生成赛道”，识别结果可继续校对。");
-        statusBar()->showMessage("图片已载入", 4000);
-        startRecognition(false);
-    });
-    watcher->setFuture(QtConcurrent::run([p] {
-        QImageReader reader(p);
-        reader.setAutoTransform(true);
-        const QSize size = reader.size();
-        if (!size.isValid() || qint64(size.width()) * size.height() > 80LL * 1000 * 1000)
-            return QImage();
-        if (size.width() > 3200 || size.height() > 3200)
-            reader.setScaledSize(size.scaled(3200, 3200, Qt::KeepAspectRatio));
-        return reader.read();
-    }));
+    setPlacement({});
+    runImageRecognition(checked.paths.front(), {});
 }
 void StudioWindow::startRecognition(bool confirmReplace) {
     if (recognizing_ || doc_.background.isNull())
@@ -1069,49 +1160,141 @@ void StudioWindow::startRecognition(bool confirmReplace) {
                                   QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
             return;
     }
+    runImageRecognition({}, doc_.background);
+}
+void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &image) {
     recognizing_ = true;
     recognizeButton_->setEnabled(false);
-    recognizeButton_->setText("正在识别…");
+    recognizeButton_->setText("正在本地生成…");
+    recognitionStartedMs_ = QDateTime::currentMSecsSinceEpoch();
+    recognitionTimer_->start();
+    const quint64 serial = ++recognitionSerial_;
     const quint64 revision = revision_;
-    const QImage input = doc_.background;
     RecognitionOptions options;
     options.autoScale = autoScale_->isChecked();
     options.metersPerPixel = scale_->value();
-    auto *watcher = new QFutureWatcher<RecognitionResult>(this);
-    statusBar()->showMessage("正在本地识别门架和布局…");
-    connect(watcher, &QFutureWatcher<RecognitionResult>::finished, this, [this, watcher, revision] {
-        const auto result = watcher->result();
-        watcher->deleteLater();
-        recognizing_ = false;
-        recognizeButton_->setEnabled(!doc_.background.isNull());
-        recognizeButton_->setText("识别图片并生成赛道");
-        if (revision != revision_) {
-            notice_->setText("识别期间工程已改变，本次结果已丢弃。请在当前工程重新识别。");
-            return;
-        }
-        if (result.detectedCount == 0) {
+    auto *watcher = new QFutureWatcher<ImageWork>(this);
+    statusBar()->showMessage("正在读取并解析赛道图…");
+    connect(
+        watcher, &QFutureWatcher<ImageWork>::finished, this,
+        [this, watcher, revision, serial, imagePath] {
+            const auto work = watcher->result();
+            watcher->deleteLater();
+            if (serial != recognitionSerial_)
+                return;
+            recognizing_ = false;
+            recognitionTimer_->stop();
+            recognizeButton_->setEnabled(!doc_.background.isNull());
+            recognizeButton_->setText("识别图片并生成赛道");
+            if (revision != revision_) {
+                notice_->setText("识别期间工程已改变，本次结果已丢弃。请在当前工程重新识别。");
+                return;
+            }
+            if (!work.error.isEmpty()) {
+                fail(work.error);
+                return;
+            }
+            const auto &result = work.recognition;
+            if (result.detectedCount == 0 && imagePath.isEmpty()) {
+                notice_->setText(
+                    "没有可靠的识别结果，当前组件已保留。可用“AI 解析当前图”生成预览草稿。");
+                return;
+            }
+            auto after = result.document;
+            after.name = imagePath.isEmpty() ? doc_.name : QFileInfo(imagePath).completeBaseName();
+            after.scenery = doc_.scenery;
+            selected_.clear();
+            pushEdit("图片生成赛道", doc_, after);
+            recognizeButton_->setEnabled(!doc_.background.isNull());
+            fitViews();
             notice_->setText(
-                "未找到可识别的蓝色门架。请使用清晰俯视图、裁掉界面边框，或手动放置门架。");
-            return;
+                result.detectedCount
+                    ? QString("已生成 %1 组组件 · 本地用时 %2 秒 · 请核对组合门的高度和通过顺序。")
+                          .arg(result.detectedCount)
+                          .arg(work.elapsedMs / 1000.0, 0, 'f', 2)
+                    : QString("图片已导入，未生成不可靠的组件。可点击“AI 解析当前图”继续。"));
+            notice_->setToolTip("<pre>" + result.warnings.join("\n").toHtmlEscaped() + "</pre>");
+            statusBar()->showMessage("导入完成 · Ctrl+Z 可恢复导入前的工程", 6000);
+        });
+    watcher->setFuture(QtConcurrent::run([imagePath, image, options] {
+        QElapsedTimer timer;
+        timer.start();
+        ImageWork work;
+        QImage input = image;
+        if (!imagePath.isEmpty()) {
+            QImageReader reader(imagePath);
+            reader.setAutoTransform(true);
+            const QSize size = reader.size();
+            if (!size.isValid() || qint64(size.width()) * size.height() > 80000000) {
+                work.error = "图片尺寸无效或超过限制。";
+                return work;
+            }
+            if (size.width() > 3200 || size.height() > 3200)
+                reader.setScaledSize(size.scaled(3200, 3200, Qt::KeepAspectRatio));
+            input = reader.read();
         }
-        auto after = result.document;
-        after.name = doc_.name;
-        after.scenery = doc_.scenery;
-        pushEdit("图片生成赛道", doc_, after);
-        fitViews();
-        notice_->setText(QString("已识别 %1 个门架 · 请在 3D 场景校对高度、朝向与通过顺序。")
-                             .arg(result.detectedCount));
-        notice_->setToolTip("<pre>" + result.warnings.join("\n").toHtmlEscaped() + "</pre>");
-        statusBar()->showMessage("识别完成 · 可撤销或继续调整", 6000);
-    });
-    watcher->setFuture(
-        QtConcurrent::run([input, options] { return recognizeTrack(input, options); }));
+        if (input.isNull()) {
+            work.error = "无法读取图片，请检查文件是否完整。";
+            return work;
+        }
+        work.recognition = recognizeTrack(input, options);
+        work.elapsedMs = timer.elapsed();
+        return work;
+    }));
 }
 void StudioWindow::closeEvent(QCloseEvent *e) {
     if (maybeSave())
         e->accept();
     else
         e->ignore();
+}
+bool StudioWindow::eventFilter(QObject *target, QEvent *event) {
+    const auto highlight = [this](bool active) {
+        if (dropZone_->property("dragOver").toBool() == active)
+            return;
+        dropZone_->setProperty("dragOver", active);
+        dropZone_->style()->unpolish(dropZone_);
+        dropZone_->style()->polish(dropZone_);
+        dropZone_->update();
+    };
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+        auto *drag = static_cast<QDragMoveEvent *>(event);
+        const auto checked = inspectImageDrop(drag->mimeData());
+        const bool accepted = checked.supported && drag->possibleActions().testFlag(Qt::CopyAction);
+        highlight(accepted);
+        if (accepted) {
+            drag->setDropAction(Qt::CopyAction);
+            drag->accept();
+        } else {
+            drag->ignore();
+            statusBar()->showMessage(checked.error, 5000);
+        }
+        return true;
+    }
+    if (event->type() == QEvent::DragLeave) {
+        highlight(false);
+        event->accept();
+        return true;
+    }
+    if (event->type() == QEvent::Drop) {
+        auto *drop = static_cast<QDropEvent *>(event);
+        highlight(false);
+        const auto checked = inspectImageDrop(drop->mimeData());
+        if (!checked.supported || !drop->possibleActions().testFlag(Qt::CopyAction)) {
+            statusBar()->showMessage(checked.error, 5000);
+            drop->ignore();
+            return true;
+        }
+        drop->setDropAction(Qt::CopyAction);
+        drop->accept();
+        if (checked.paths.size() == 1)
+            importImagePath(checked.paths.front());
+        else
+            QTimer::singleShot(0, this,
+                               [this, paths = checked.paths] { importPhotosWithAi(paths); });
+        return true;
+    }
+    return QMainWindow::eventFilter(target, event);
 }
 QImage makeExampleImage() {
     QImage img(1400, 900, QImage::Format_RGB32);
@@ -1154,18 +1337,76 @@ QImage makeExampleImage() {
 }
 bool StudioWindow::runSmokeTest(const QString &dir) {
     QDir().mkpath(dir);
+    const auto smokeFailure = [this, dir](int line) {
+        QFile failure(dir + "/failure.json");
+        if (failure.open(QIODevice::WriteOnly)) {
+            const QJsonObject details{{"line", line},
+                                      {"gates", doc_.gates.size()},
+                                      {"recognizing", recognizing_},
+                                      {"revision", qint64(revision_)},
+                                      {"view", views_->currentWidget() == scene3d_ ? "3D" : "2D"}};
+            failure.write(QJsonDocument(details).toJson());
+        }
+        return false;
+    };
+
     QString error;
     const QImage sample = makeExampleImage();
     if (!sample.save(dir + "/example-track.png"))
-        return false;
+        return smokeFailure(__LINE__);
+    const TrackDocument original = doc_;
+    QWidget *initialView = views_->currentWidget();
+    // File drop follows the real asynchronous import path, including a single undo transaction.
+    for (auto *target : QList<QWidget *>{dropZone_, canvas_->viewport(), scene3d_}) {
+        if (!target)
+            continue;
+        if (target == canvas_->viewport())
+            views_->setCurrentWidget(canvas_);
+        else if (target == scene3d_)
+            views_->setCurrentWidget(scene3d_);
+        QApplication::processEvents();
+        const TrackDocument beforeDrop = doc_;
+        QMimeData mime;
+        mime.setUrls({QUrl::fromLocalFile(QDir(dir).absoluteFilePath("example-track.png"))});
+        QDragEnterEvent enter(QPoint(12, 12), Qt::CopyAction | Qt::MoveAction, &mime,
+                              Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(target, &enter);
+        QDropEvent drop(QPointF(12, 12), Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton,
+                        Qt::NoModifier);
+        QApplication::sendEvent(target, &drop);
+        if (!enter.isAccepted() || !drop.isAccepted() || drop.dropAction() != Qt::CopyAction) {
+            qWarning() << "Drop test rejected" << target->metaObject()->className()
+                       << enter.isAccepted() << drop.isAccepted() << drop.dropAction();
+            return smokeFailure(__LINE__);
+        }
+        QElapsedTimer wait;
+        wait.start();
+        while (recognizing_ && wait.elapsed() < 5000)
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (recognizing_ || doc_.gates.size() != 13 || doc_.background.isNull()) {
+            qWarning() << "Drop import failed" << recognizing_ << doc_.gates.size();
+            return smokeFailure(__LINE__);
+        }
+        undo_.undo();
+        if (!sameDocument(doc_, beforeDrop)) {
+            qWarning() << "Drop undo failed" << target->metaObject()->className();
+            return smokeFailure(__LINE__);
+        }
+        undo_.redo();
+        if (doc_.gates.size() != 13)
+            return smokeFailure(__LINE__);
+    }
+    views_->setCurrentWidget(initialView);
+    applyDocument(original);
+    undo_.clear();
     const auto result = recognizeTrack(sample);
     if (result.detectedCount != 13) {
         qWarning() << "Recognition count" << result.detectedCount << result.warnings;
-        return false;
+        return smokeFailure(__LINE__);
     }
     if (result.document.gates.isEmpty() ||
         !gateFrameMetrics(result.document.gates[0]).centerlineModel)
-        return false;
+        return smokeFailure(__LINE__);
     TrackDocument before = doc_;
     applyDocument(result.document);
     auto beforeEdit = doc_;
@@ -1173,13 +1414,13 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     canvas_->selectGate(selected_);
     duplicateGate();
     if (doc_.gates.size() != 14)
-        return false;
+        return smokeFailure(__LINE__);
     undo_.undo();
     if (doc_.gates.size() != 13)
-        return false;
+        return smokeFailure(__LINE__);
     undo_.redo();
     if (doc_.gates.size() != 14)
-        return false;
+        return smokeFailure(__LINE__);
     undo_.undo();
     const QString project = dir + "/example.otproj", trk = dir + "/example.trk";
     // Exercise the actual property control, document undo, and persisted color together.
@@ -1188,33 +1429,33 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     const QColor originalColor = gateColor(doc_.gates[0]);
     const int redIndex = color_->findData(QString("#e60000"));
     if (redIndex < 0)
-        return false;
+        return smokeFailure(__LINE__);
     color_->setCurrentIndex(redIndex);
     if (gateColor(doc_.gates[0]) != QColor("#e60000"))
-        return false;
+        return smokeFailure(__LINE__);
     undo_.undo();
     if (gateColor(doc_.gates[0]) != originalColor)
-        return false;
+        return smokeFailure(__LINE__);
     undo_.redo();
     if (gateColor(doc_.gates[0]) != QColor("#e60000"))
-        return false;
+        return smokeFailure(__LINE__);
     if (!saveProject(project, doc_, &error)) {
         qWarning() << error;
-        return false;
+        return smokeFailure(__LINE__);
     }
     TrackDocument restored;
     if (!loadProject(project, &restored, &error) || toJson(restored) != toJson(doc_)) {
         qWarning() << error;
-        return false;
+        return smokeFailure(__LINE__);
     }
     if (!exportVelocidrone(trk, doc_, &error)) {
         qWarning() << error;
-        return false;
+        return smokeFailure(__LINE__);
     }
     TrackDocument imported;
     if (!importVelocidrone(trk, &imported, &error) || imported.gates.size() != doc_.gates.size()) {
         qWarning() << error;
-        return false;
+        return smokeFailure(__LINE__);
     }
     QElapsedTimer time;
     time.start();
@@ -1227,17 +1468,18 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     fitViews();
     QApplication::processEvents();
     if (!grab().save(dir + "/studio-preview.png"))
-        return false;
+        return smokeFailure(__LINE__);
     QJsonObject report{{"recognizedGates", result.detectedCount},
                        {"projectRoundtrip", true},
                        {"trackCodecRoundtrip", true},
                        {"undoRedo", true},
                        {"colorPropertyUndoRedo", true},
+                       {"imageDropAndAtomicUndo", true},
                        {"zoom200OperationsMs", zoomMs},
                        {"simulatorImportTested", false}};
     QFile file(dir + "/smoke-report.json");
     if (!file.open(QIODevice::WriteOnly))
-        return false;
+        return smokeFailure(__LINE__);
     file.write(QJsonDocument(report).toJson());
     undo_.clear();
     undo_.setClean();

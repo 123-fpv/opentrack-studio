@@ -158,6 +158,19 @@ bool validateDocument(const TrackDocument &document, QString *error) {
                     return fail(error,
                                 QStringLiteral("门架 %1 的梁材参数 %2 无效。").arg(gate.id, field));
             }
+            const auto metrics = gateFrameMetrics(gate);
+            for (const auto &field : {QStringLiteral("passColumn"), QStringLiteral("passLevel")}) {
+                const auto value = gate.extra.value(field);
+                if (value.isUndefined())
+                    continue;
+                const int count =
+                    field == QStringLiteral("passColumn") ? metrics.columns : metrics.levels;
+                const double index = value.toDouble(-1);
+                if (!value.isDouble() || !std::isfinite(index) || index < 0 || index >= count ||
+                    index != std::floor(index))
+                    return fail(error,
+                                QStringLiteral("门架 %1 的通行单元 %2 无效。").arg(gate.id, field));
+            }
         }
     }
     return true;
@@ -379,10 +392,14 @@ QString gateTypeName(const QString &type) {
         return QStringLiteral("标准门");
     if (type == QStringLiteral("double"))
         return QStringLiteral("双联门");
+    if (type == QStringLiteral("triple"))
+        return QStringLiteral("三联门");
     if (type == QStringLiteral("ladder"))
         return QStringLiteral("叠门");
     if (type == QStringLiteral("cube"))
         return QStringLiteral("立方门");
+    if (type == QStringLiteral("cube-stack"))
+        return QStringLiteral("双层立方门");
     if (type == QStringLiteral("pillar"))
         return QStringLiteral("转向柱");
     if (type == QStringLiteral("flag"))
@@ -440,11 +457,20 @@ GateFrameMetrics gateFrameMetrics(const Gate &gate) {
         metrics.beamThickness = gate.width;
         metrics.horizontalBeamLength = metrics.outerWidth = gate.width;
         metrics.verticalBeamLength = metrics.outerHeight = gate.height;
+        metrics.outerDepth = gate.width;
         return metrics;
     }
     metrics.centerlineModel = gate.extra.value(QStringLiteral("frameGeometry")).toString() ==
                               QStringLiteral("centerline-v1");
     if (metrics.centerlineModel) {
+        if (gate.type == QStringLiteral("double"))
+            metrics.columns = 2;
+        else if (gate.type == QStringLiteral("triple"))
+            metrics.columns = 3;
+        if (gate.type == QStringLiteral("ladder") || gate.type == QStringLiteral("cube-stack"))
+            metrics.levels = 2;
+        if (gate.type == QStringLiteral("cube") || gate.type == QStringLiteral("cube-stack"))
+            metrics.centerDepth = gate.width;
         const auto setting = [&gate](const QString &field, double fallback, double minimum) {
             const auto value = gate.extra.value(field);
             const double number = value.toDouble(fallback);
@@ -463,8 +489,14 @@ GateFrameMetrics gateFrameMetrics(const Gate &gate) {
     }
     metrics.openingWidth = std::max(0.0, gate.width - metrics.beamThickness);
     metrics.openingHeight = std::max(0.0, gate.height - metrics.beamThickness);
-    metrics.outerWidth = std::max(metrics.horizontalBeamLength, gate.width + metrics.beamThickness);
-    metrics.outerHeight = std::max(metrics.verticalBeamLength, gate.height + metrics.beamThickness);
+    metrics.outerWidth = (metrics.columns - 1) * gate.width +
+                         std::max(metrics.horizontalBeamLength, gate.width + metrics.beamThickness);
+    metrics.outerHeight = (metrics.levels - 1) * gate.height +
+                          std::max(metrics.verticalBeamLength, gate.height + metrics.beamThickness);
+    metrics.outerDepth =
+        metrics.centerDepth > 0
+            ? std::max(metrics.horizontalBeamLength, metrics.centerDepth + metrics.beamThickness)
+            : metrics.beamThickness;
     return metrics;
 }
 
@@ -477,6 +509,34 @@ QVector<GateBeam> gateFrameBeams(const Gate &gate) {
     const float thickness = static_cast<float>(metrics.beamThickness);
     const float horizontal = static_cast<float>(metrics.horizontalBeamLength);
     const float vertical = static_cast<float>(metrics.verticalBeamLength);
+    if (metrics.centerlineModel) {
+        QVector<GateBeam> beams;
+        const float width = static_cast<float>(metrics.centerWidth);
+        const float height = static_cast<float>(metrics.centerHeight);
+        const float left = -width * metrics.columns / 2;
+        const float bottom = -height * metrics.levels / 2;
+        const bool cube = metrics.centerDepth > 0;
+        const QVector<float> faces =
+            cube ? QVector<float>{-halfWidth, halfWidth} : QVector<float>{0};
+        // Vertical stocks are separate per cell level, including shared joints.
+        for (const float z : faces)
+            for (int column = 0; column <= metrics.columns; ++column)
+                for (int level = 0; level < metrics.levels; ++level)
+                    beams.append({{left + column * width, bottom + (level + .5f) * height, z},
+                                  {thickness, vertical, thickness}});
+        // Descending boundaries preserve the historical four-beam order for a single frame.
+        for (const float z : faces)
+            for (int boundary = metrics.levels; boundary >= 0; --boundary)
+                for (int column = 0; column < metrics.columns; ++column)
+                    beams.append({{left + (column + .5f) * width, bottom + boundary * height, z},
+                                  {horizontal, thickness, thickness}});
+        if (cube)
+            for (int boundary = metrics.levels; boundary >= 0; --boundary)
+                for (const float x : {-halfWidth, halfWidth})
+                    beams.append(
+                        {{x, bottom + boundary * height, 0}, {thickness, thickness, horizontal}});
+        return beams;
+    }
     return {{{-halfWidth, 0, 0}, {thickness, vertical, thickness}},
             {{halfWidth, 0, 0}, {thickness, vertical, thickness}},
             {{0, halfHeight, 0}, {horizontal, thickness, thickness}},
@@ -501,12 +561,31 @@ Gate makeGate(const QString &type, double width, double height) {
 }
 
 QPointF gatePassagePosition(const Gate &gate) {
-    if (gate.type != QStringLiteral("pillar"))
-        return gate.position;
     const double yaw = gate.yaw * 3.14159265358979323846 / 180.0;
-    const double side = gate.extra.value(QStringLiteral("passSide")).toInt(1) < 0 ? -1.0 : 1.0;
-    const QPointF right(std::cos(yaw), -std::sin(yaw));
-    return gate.position + right * ((gate.width / 2.0 + 1.55) * side);
+    double localX = 0, localZ = 0;
+    if (gate.type == QStringLiteral("pillar")) {
+        const double side = gate.extra.value(QStringLiteral("passSide")).toInt(1) < 0 ? -1.0 : 1.0;
+        localX = (gate.width / 2.0 + 1.55) * side;
+    } else {
+        const auto metrics = gateFrameMetrics(gate);
+        if (!metrics.centerlineModel)
+            return gate.position;
+        const int column = std::clamp(gate.extra.value(QStringLiteral("passColumn")).toInt(0), 0,
+                                      metrics.columns - 1);
+        localX = (column - (metrics.columns - 1) / 2.0) * gate.width;
+        localZ = -metrics.centerDepth / 2;
+    }
+    return gate.position + QPointF(std::cos(yaw) * localX + std::sin(yaw) * localZ,
+                                   -std::sin(yaw) * localX + std::cos(yaw) * localZ);
+}
+
+double gatePassageElevation(const Gate &gate) {
+    const auto metrics = gateFrameMetrics(gate);
+    if (!metrics.centerlineModel)
+        return gate.elevation;
+    const int level =
+        std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(0), 0, metrics.levels - 1);
+    return gate.elevation + (level - (metrics.levels - 1) / 2.0) * gate.height;
 }
 
 QPainterPath routePath(const TrackDocument &document) {

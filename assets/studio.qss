@@ -25,6 +25,8 @@ QFrame#header QPushButton#primary { color: #111111; background: #fafafa; border-
 QFrame#header QPushButton#primary:hover { background: #dcdcdc; border-color: #dcdcdc; }
 QPushButton#secondary { color: #222222; background: #fafafa; border-color: #bcbcbc; }
 QPushButton#secondary:hover { color: #000000; background: #e8e8e8; border-color: #555555; }
+QPushButton#imageDropZone { border: 1px dashed #777777; background: #fafafa; padding: 10px 5px; }
+QPushButton#imageDropZone:hover, QPushButton#imageDropZone[dragOver="true"] { border: 2px solid #222222; background: #e8e8e8; }
 QPushButton#viewToggle { padding: 5px 12px; background: #ffffff; color: #666666; border-color: #bfbfbf; }
 QPushButton#viewToggle:checked { background: #222222; color: #ffffff; border-color: #222222; font-weight: 600; }
 QPushButton#headerImport { background: #242424; color: #ffffff; border-color: #6b6b6b; }

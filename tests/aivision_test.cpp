@@ -61,6 +61,17 @@ int main(int argc, char **argv) {
           "default is the native image-capable Flash model");
     check(request.value("response_format").toObject().value("type").toString() == "json_object",
           "strict JSON output requested");
+    check(request.value("thinking").toObject().value("type").toString() == "disabled",
+          "fast mode explicitly disables the provider's default thinking mode");
+    auto detailed = settings;
+    detailed.fastMode = false;
+    check(QJsonDocument::fromJson(ot::buildVisionRequest({photo}, detailed))
+                  .object()
+                  .value("thinking")
+                  .toObject()
+                  .value("type")
+                  .toString() == "enabled",
+          "complex analysis remains available without changing the endpoint");
     const auto messages = request.value("messages").toArray();
     check(messages.size() == 2 && messages[0].toObject().value("role").toString() == "system",
           "instructions and image data are separate messages");
@@ -106,6 +117,37 @@ int main(int argc, char **argv) {
         check(parsed.document.gates[0].elevation == 1.2, "altitude denotes gate centre");
     }
     check(!parsed.warnings.isEmpty(), "AI geometry is always accompanied by review warnings");
+    {
+        auto repeated = draft();
+        auto track = repeated["track"].toObject();
+        auto start = gate();
+        start["type"] = "start";
+        track["gates"] = QJsonArray{start, start};
+        repeated["track"] = track;
+        const auto normalized = ot::parseVisionResponse(response(repeated), settings);
+        check(normalized.ok && normalized.document.gates.size() == 2 &&
+                  normalized.document.gates[0].type == "start" &&
+                  normalized.document.gates[1].type == "standard" && !normalized.warnings.isEmpty(),
+              "multiple model starts retain one start and preserve the other physical frame with "
+              "review warning");
+    }
+    for (const auto &kind : {"double", "triple", "ladder", "cube", "cube-stack"}) {
+        auto compound = gate();
+        compound["type"] = kind;
+        compound["width"] = 3.0;
+        compound["height"] = 3.0;
+        compound["elevation"] =
+            QString(kind) == "ladder" || QString(kind) == "cube-stack" ? 3.1 : 1.6;
+        auto object = draft();
+        auto layout = object["track"].toObject();
+        layout["gates"] = QJsonArray{compound};
+        object["track"] = layout;
+        const auto assembled = ot::parseVisionResponse(response(object), settings);
+        check(assembled.ok && assembled.document.gates.size() == 1 &&
+                  assembled.document.gates[0].type == kind &&
+                  ot::gateFrameBeams(assembled.document.gates[0]).size() > 4,
+              "compound AI objects retain a real multi-beam assembly");
+    }
     check(parsed.document.extra.value("aiVision").toObject().value("reviewRequired").toBool(),
           "draft metadata marks human review mandatory");
     check(settings.knownGateWidth == 3.0,
@@ -203,11 +245,11 @@ int main(int argc, char **argv) {
     check(!invalid.ok && invalid.document.gates.isEmpty(),
           "invalid later gate rejects the entire draft atomically");
     badGate = gate();
-    badGate["type"] = "double";
+    badGate["type"] = "teleporter";
     track["gates"] = QJsonArray{badGate};
     malformed["track"] = track;
     check(!ot::parseVisionResponse(response(malformed), settings).ok,
-          "unsupported native prefab is rejected");
+          "unsupported logical object type is rejected");
     badGate = gate();
     badGate["x"] = "not-a-number";
     track["gates"] = QJsonArray{badGate};

@@ -12,6 +12,7 @@ class QSlider;
 class QCheckBox;
 class QPushButton;
 class QStackedWidget;
+class QTimer;
 namespace ot {
 class Scene3D;
 class StudioWindow : public QMainWindow {
@@ -24,6 +25,7 @@ class StudioWindow : public QMainWindow {
 
   protected:
     void closeEvent(QCloseEvent *) override;
+    bool eventFilter(QObject *, QEvent *) override;
 
   private:
     TrackDocument doc_, gestureBefore_;
@@ -36,6 +38,8 @@ class StudioWindow : public QMainWindow {
     QComboBox *scenery_ = nullptr;
     QComboBox *passSide_ = nullptr;
     QComboBox *color_ = nullptr;
+    QComboBox *passColumn_ = nullptr, *passLevel_ = nullptr;
+    QWidget *passCell_ = nullptr;
     QLabel *passSideLabel_ = nullptr;
     QLabel *widthLabel_ = nullptr, *heightLabel_ = nullptr, *dimensions_ = nullptr,
            *colorMapping_ = nullptr;
@@ -47,6 +51,10 @@ class StudioWindow : public QMainWindow {
     QSlider *opacity_ = nullptr;
     QCheckBox *autoScale_ = nullptr, *imageVisible_ = nullptr;
     QPushButton *recognizeButton_ = nullptr;
+    QPushButton *dropZone_ = nullptr;
+    QTimer *recognitionTimer_ = nullptr;
+    qint64 recognitionStartedMs_ = 0;
+    quint64 recognitionSerial_ = 0;
     QString path_, selected_;
     bool updating_ = false, recognizing_ = false;
     quint64 revision_ = 0;
@@ -67,7 +75,9 @@ class StudioWindow : public QMainWindow {
     void rotateGate(double delta);
     void moveOrder(int delta);
     void importImage();
-    void importPhotosWithAi();
+    void importImagePath(const QString &path);
+    void importPhotosWithAi(const QStringList &paths = {});
+    void runImageRecognition(const QString &imagePath, const QImage &image);
     void startRecognition(bool confirmReplace = true);
     void newProject(bool demo = false);
     void openProject();

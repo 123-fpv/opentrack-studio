@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QImage>
 #include <QKeyEvent>
+#include <QMatrix4x4>
 #include <QMouseEvent>
 #include <cmath>
 #include <iostream>
@@ -52,10 +53,32 @@ bool sceneChanged(const QImage &before, const QImage &after) {
 bool snapped(double value) {
     return std::abs(value * 2 - std::round(value * 2)) < .0001;
 }
+
+QRect redBounds(const QImage &image) {
+    QRect bounds;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x) {
+            const auto color = image.pixelColor(x, y);
+            if (color.red() > 90 && color.red() > color.green() * 2 &&
+                color.red() > color.blue() * 2)
+                bounds = bounds.united(QRect(x, y, 1, 1));
+        }
+    return bounds;
+}
 } // namespace
 
 int main(int argc, char **argv) {
     QApplication application(argc, argv);
+    require(ot::editorAxisDirection(Qt::XAxis) == QVector3D(1, 0, 0) &&
+                ot::editorAxisDirection(Qt::YAxis) == QVector3D(0, 0, 1) &&
+                ot::editorAxisDirection(Qt::ZAxis) == QVector3D(0, 1, 0),
+            "editor X/Y ground and Z-up labels map to the unchanged native basis");
+    QMatrix4x4 axisCamera;
+    axisCamera.lookAt({6, 4, 6}, {0, 0, 0}, {0, 1, 0});
+    const QVector3D verticalAxis = axisCamera.mapVector(ot::editorAxisDirection(Qt::ZAxis));
+    const QVector3D groundAxis = axisCamera.mapVector(ot::editorAxisDirection(Qt::YAxis));
+    require(std::abs(verticalAxis.x()) < 1e-5 && verticalAxis.y() > 0 && groundAxis.y() < 0,
+            "Z gizmo projects upward while Y remains on the ground plane");
     ot::TrackDocument document;
     ot::Gate gate;
     gate.id = QStringLiteral("gate-under-pointer");
@@ -151,6 +174,54 @@ int main(int argc, char **argv) {
     scene.setDocument(&empty);
     scene.fitTrack();
     require(!scene.exportImage().isNull(), "empty document has a usable ground view");
+    ot::TrackDocument framed;
+    auto redGate = ot::makeGate();
+    redGate.position = {-110, 70};
+    ot::setGateColor(redGate, QColor("#e60000"));
+    framed.gates = {redGate};
+    scene.setDocument(&framed);
+    scene.fitTrack();
+    const auto withoutBackground = redBounds(scene.exportImage());
+    framed.background = QImage(1200, 900, QImage::Format_RGB32);
+    framed.background.fill(Qt::white);
+    framed.backgroundOrigin = {-900, -700};
+    framed.metersPerPixel = 2;
+    scene.refreshGeometry();
+    scene.fitTrack();
+    const auto withBackground = redBounds(scene.exportImage());
+    require(withoutBackground.width() > 20 && withoutBackground.height() > 20,
+            "background-fit fixture has a clearly visible colored gate");
+    require(withBackground.width() >= withoutBackground.width() * .9 &&
+                withBackground.height() >= withoutBackground.height() * .9 &&
+                std::abs(withBackground.center().x() - withoutBackground.center().x()) <= 3 &&
+                std::abs(withBackground.center().y() - withoutBackground.center().y()) <= 3,
+            "huge asymmetric background margins do not shrink or shift the fitted gate");
+    require(framed.showBackground && !framed.background.isNull(),
+            "fitting components retains the background and its visibility setting");
+    ot::TrackDocument compound;
+    for (const auto &type :
+         {QStringLiteral("double"), QStringLiteral("triple"), QStringLiteral("ladder"),
+          QStringLiteral("cube"), QStringLiteral("cube-stack")}) {
+        compound.gates = {ot::makeGate(type)};
+        scene.setDocument(&compound);
+        scene.fitTrack();
+        require(!scene.exportImage().isNull(),
+                "compound stock frames render and fit in native or fallback perspective");
+        // Perspective fitting retains the camera's earlier orbit; a wide flat
+        // group can project away from the screen center. Find a selectable
+        // point in the central content region without assuming pixel geometry.
+        for (int row = 2; row <= 8 && scene.selectedGate() != compound.gates[0].id; ++row)
+            for (int column = 2; column <= 8 && scene.selectedGate() != compound.gates[0].id;
+                 ++column) {
+                const QPointF pick(scene.width() * column / 10., scene.height() * row / 10.);
+                mouse(scene, QEvent::MouseButtonPress, pick, Qt::LeftButton, Qt::LeftButton);
+                mouse(scene, QEvent::MouseButtonRelease, pick, Qt::LeftButton, Qt::NoButton);
+            }
+        require(scene.selectedGate() == compound.gates[0].id,
+                "whole compound frame is pickable after fitting, including stacked groups");
+        require(compound.gates[0].position == QPointF(),
+                "compound selection preserves the group's physical center");
+    }
     ot::TrackDocument large;
     for (int i = 0; i < 500; ++i) {
         ot::Gate item;

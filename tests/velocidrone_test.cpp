@@ -388,6 +388,144 @@ int main(int argc, char **argv) {
     } else
         require(false, "composite course logical object count");
 
+    const QList<QPair<QString, int>> compoundKinds = {{QStringLiteral("double"), 7},
+                                                      {QStringLiteral("triple"), 10},
+                                                      {QStringLiteral("ladder"), 7},
+                                                      {QStringLiteral("cube"), 12},
+                                                      {QStringLiteral("cube-stack"), 20}};
+    for (const auto &definition : compoundKinds) {
+        for (int selectedCell = 0; selectedCell < 2; ++selectedCell) {
+            ot::TrackDocument course;
+            auto anchor = ot::makeGate(QStringLiteral("start"));
+            anchor.position = {-50, -50};
+            auto group = ot::makeGate(definition.first);
+            group.position = {8, 12};
+            group.yaw = 37;
+            const auto dimensions = ot::gateFrameMetrics(group);
+            if (selectedCell) {
+                group.extra.insert(QStringLiteral("passColumn"), dimensions.columns - 1);
+                group.extra.insert(QStringLiteral("passLevel"), dimensions.levels - 1);
+            }
+            ot::setGateColor(group, QColor("#f280bf"));
+            course.gates = {anchor, group};
+            require(ot::exportVelocidrone(compositePath, course, &error),
+                    "export compound native stock assembly");
+            const auto nativeCipher = readFile(compositePath);
+            ot::TrackDocument compound;
+            require(ot::importVelocidrone(compositePath, &compound, &error),
+                    "restore complete compound assembly before matching simple face");
+            if (compound.gates.size() != 2) {
+                require(false, "compound logical object count");
+                continue;
+            }
+            const auto &restored = compound.gates[1];
+            if (restored.type != definition.first)
+                std::cerr << "Compound type mismatch: " << definition.first.toStdString() << " -> "
+                          << restored.type.toStdString() << '\n';
+            require(restored.type == definition.first,
+                    "compound type survives native geometry reconstruction");
+            require(near(restored.position.x(), 8, .025) && near(restored.position.y(), 12, .025) &&
+                        near(restored.elevation, group.elevation, .025),
+                    "compound physical group center reconstructed from offset passage");
+            require(restored.extra.value(QStringLiteral("passColumn")).toInt(0) ==
+                            group.extra.value(QStringLiteral("passColumn")).toInt(0) &&
+                        restored.extra.value(QStringLiteral("passLevel")).toInt(0) ==
+                            group.extra.value(QStringLiteral("passLevel")).toInt(0),
+                    "left/right and lower/upper selected passage restored");
+            require(ot::gateFrameBeams(restored).size() == definition.second,
+                    "compound owns exact unique stock count");
+            const auto native = compound.extra.value(QStringLiteral("velocidroneRoot")).toObject();
+            require(native.value(QStringLiteral("barriers")).toArray().size() ==
+                        4 + definition.second,
+                    "compound physical barriers contain N unique bars plus separate start gate");
+            const auto cp = native.value(QStringLiteral("gates"))
+                                .toArray()[1]
+                                .toObject()
+                                .value(QStringLiteral("trans"))
+                                .toObject();
+            const auto cpPos = cp.value(QStringLiteral("pos")).toArray(),
+                       cpRot = cp.value(QStringLiteral("rot")).toArray();
+            const auto q = QQuaternion(static_cast<float>(cpRot[0].toDouble() / 1000),
+                                       static_cast<float>(cpRot[1].toDouble() / 1000),
+                                       static_cast<float>(cpRot[2].toDouble() / 1000),
+                                       static_cast<float>(cpRot[3].toDouble() / 1000))
+                               .normalized();
+            const auto o = q.rotatedVector(QVector3D(0, 0, -1.45f));
+            const auto passage = ot::gatePassagePosition(group);
+            require(
+                near(cpPos[0].toDouble() / 100 + o.x(), passage.x(), .02) &&
+                    near(cpPos[2].toDouble() / 100 + o.z(), passage.y(), .02) &&
+                    near(cpPos[1].toDouble() / 100 + o.y(), ot::gatePassageElevation(group), .02),
+                "compound checkpoint crosses selected cell, not central solid bars");
+            require(ot::exportVelocidrone(compositePath, compound, &error) &&
+                        readFile(compositePath) == nativeCipher,
+                    "unchanged N-bar compound roundtrips exact native ciphertext");
+            auto copy = compound.gates[1];
+            copy.id = ot::newGateId();
+            copy.position += QPointF(20, 0);
+            compound.gates.append(copy);
+            require(ot::exportVelocidrone(compositePath, compound, &error),
+                    "duplicate compound assembly");
+            ot::TrackDocument twice;
+            require(ot::importVelocidrone(compositePath, &twice, &error),
+                    "restore duplicated compound assembly");
+            require(twice.extra.value(QStringLiteral("velocidroneRoot"))
+                            .toObject()
+                            .value(QStringLiteral("barriers"))
+                            .toArray()
+                            .size() == 4 + definition.second * 2,
+                    "duplicate creates exactly N additional physical stocks");
+            if (twice.gates.size() == 3) {
+                twice.gates.removeLast();
+                require(ot::exportVelocidrone(compositePath, twice, &error),
+                        "delete compound assembly");
+                ot::TrackDocument once;
+                require(ot::importVelocidrone(compositePath, &once, &error),
+                        "restore course after compound deletion");
+                require(once.extra.value(QStringLiteral("velocidroneRoot"))
+                                .toObject()
+                                .value(QStringLiteral("barriers"))
+                                .toArray()
+                                .size() == 4 + definition.second,
+                        "compound deletion removes all N owned bars");
+            } else
+                require(false, "duplicate compound logical count");
+        }
+    }
+
+    ot::TrackDocument adjacent;
+    auto adjacentStart = ot::makeGate(QStringLiteral("start"));
+    auto adjacentSingle = ot::makeGate(QStringLiteral("standard"));
+    adjacentSingle.position = {3, 0};
+    adjacent.gates = {adjacentStart, adjacentSingle};
+    require(ot::exportVelocidrone(compositePath, adjacent, &error),
+            "export independent adjacent single gates");
+    ot::TrackDocument adjacentRestored;
+    require(ot::importVelocidrone(compositePath, &adjacentRestored, &error),
+            "import adjacent singles without accidental group merge");
+    require(adjacentRestored.gates.size() == 2 &&
+                adjacentRestored.gates[0].type == QStringLiteral("start") &&
+                adjacentRestored.gates[1].type == QStringLiteral("standard"),
+            "multiple checkpoints prevent merging independent singles into double");
+    ot::TrackDocument repeated;
+    auto repeatedAnchor = ot::makeGate(QStringLiteral("start"));
+    repeatedAnchor.position = {-30, -30};
+    auto leftPass = ot::makeGate(QStringLiteral("double"));
+    leftPass.position = {10, 20};
+    auto rightPass = leftPass;
+    rightPass.id = ot::newGateId();
+    rightPass.extra.insert(QStringLiteral("passColumn"), 1);
+    repeated.gates = {repeatedAnchor, leftPass, rightPass};
+    require(ot::exportVelocidrone(compositePath, repeated, &error),
+            "export overlapping repeated compound passages");
+    ot::TrackDocument repeatedRestored;
+    require(ot::importVelocidrone(compositePath, &repeatedRestored, &error),
+            "restore repeated compound passages with complete stock copies");
+    require(repeatedRestored.gates.size() == 3 &&
+                repeatedRestored.gates[1].type == QStringLiteral("double") &&
+                repeatedRestored.gates[2].type == QStringLiteral("double"),
+            "full duplicate assemblies retain independent selected cells");
+
     const QByteArray sentinel("keep existing file");
     require(writeFile(savedPath, sentinel), "write sentinel");
     created.gates[1].type = QStringLiteral("cube");

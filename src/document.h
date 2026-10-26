@@ -57,11 +57,13 @@ QString newGateId();
 
 struct GateFrameMetrics {
     bool centerlineModel = false;
+    int columns = 1, levels = 1;
     double centerWidth = 0, centerHeight = 0;
+    double centerDepth = 0;
     double beamThickness = 0;
     double horizontalBeamLength = 0, verticalBeamLength = 0;
     double openingWidth = 0, openingHeight = 0;
-    double outerWidth = 0, outerHeight = 0;
+    double outerWidth = 0, outerHeight = 0, outerDepth = 0;
 };
 
 struct GateBeam {
@@ -72,6 +74,9 @@ struct GateBeam {
 // NEW frames use extra.frameGeometry="centerline-v1", beamThickness=0.1 and
 // beamOverhang=0.2 TOTAL extra length (0.1 m at each end). Unmarked gates keep
 // their legacy bar dimensions. width/height values are never rescaled on load.
+// Marked compound frames use PER-CELL centreline width/height: double/triple
+// have 2/3 columns, ladder has 2 levels, cube has four walls at depth=width,
+// and cube-stack has 2 cube levels. Shared joints do not duplicate stock beams.
 GateFrameMetrics gateFrameMetrics(const Gate &gate);
 QVector<GateBeam> gateFrameBeams(const Gate &gate);
 // Negative/zero dimensions select type defaults: frame centreline 3 x 3 m,
@@ -81,7 +86,11 @@ Gate makeGate(const QString &type = QStringLiteral("standard"), double width = -
 
 // Pillar passages use a 2.4 m checkpoint lane beside the solid post, with 0.35 m
 // clearance. extra.passSide selects local right (+1, default) or local left (-1).
+// Marked groups select the leftmost/lower cell by default; optional zero-based
+// extra.passColumn/passLevel choose another cell. Cube passages use its front
+// wall at local Z=-width/2. Position and altitude describe the WHOLE group centre.
 QPointF gatePassagePosition(const Gate &gate);
+double gatePassageElevation(const Gate &gate);
 double routeLength(const TrackDocument &document);
 QPainterPath routePath(const TrackDocument &document);
 

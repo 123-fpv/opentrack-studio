@@ -55,6 +55,39 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
         p->drawPath(f);
         p->setPen(QPen(QColor(255, 255, 255, 180), 1.6));
         p->drawLine(QPointF(1, -16), QPointF(12, -11));
+    } else if (type == "double" || type == "triple" || type == "ladder" || type == "cube" ||
+               type == "cube-stack") {
+        const bool cube = type == "cube" || type == "cube-stack";
+        const int columns = type == "double" ? 2 : (type == "triple" ? 3 : 1);
+        const int levels = type == "ladder" || type == "cube-stack" ? 2 : 1;
+        const qreal cell = cube ? (levels == 2 ? 21. : 31.) : (columns > 1 ? 50. / columns : 21.);
+        const QPointF depth = cube ? QPointF(13, -9) : QPointF();
+        const QRectF front(-columns * cell / 2 - depth.x() / 2, -levels * cell / 2 - depth.y() / 2,
+                           columns * cell, levels * cell);
+        const auto grid = [p, columns, levels](const QRectF &face, const QColor &color,
+                                               qreal stroke) {
+            p->setPen(QPen(color, stroke, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p->setBrush(QColor(color.red(), color.green(), color.blue(), 10));
+            p->drawRect(face);
+            for (int column = 1; column < columns; ++column) {
+                const qreal x = face.left() + face.width() * column / columns;
+                p->drawLine(QPointF(x, face.top()), QPointF(x, face.bottom()));
+            }
+            for (int level = 1; level < levels; ++level) {
+                const qreal y = face.top() + face.height() * level / levels;
+                p->drawLine(QPointF(face.left(), y), QPointF(face.right(), y));
+            }
+        };
+        if (cube) {
+            grid(front.translated(depth), c.lighter(155), 2.0);
+            p->setPen(QPen(c.lighter(125), 2.0, Qt::SolidLine, Qt::RoundCap));
+            for (int level = 0; level <= levels; ++level) {
+                const qreal y = front.top() + front.height() * level / levels;
+                for (const qreal x : {front.left(), front.right()})
+                    p->drawLine(QPointF(x, y), QPointF(x, y) + depth);
+            }
+        }
+        grid(front, c, 2.8);
     } else {
         const QRectF frame(-24, -20, 43, 36);
         const QPointF d(8, -5);
@@ -393,6 +426,8 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
     p->setPen(QColor("#666666"));
     QFont f("Microsoft YaHei UI", 9);
     p->setFont(f);
+    p->drawText(QRectF(20, 14, 280, 22), Qt::AlignLeft | Qt::AlignVCenter,
+                QStringLiteral("XY 俯视图 · Z 为高度"));
     p->drawText(QRectF(20, viewport()->height() - 36, 470, 22), Qt::AlignLeft | Qt::AlignVCenter,
                 placement_.isEmpty()
                     ? QStringLiteral("先点击选中，再按住拖动 · 滚轮缩放 · 中键 / 空格平移")

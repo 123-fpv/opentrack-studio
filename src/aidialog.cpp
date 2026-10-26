@@ -99,6 +99,11 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     width_->setSuffix(" m");
     form->addRow("门框中心线间距", width_);
     right->addLayout(form);
+    fast_ = new QCheckBox("快速生成（优先速度）");
+    fast_->setChecked(true);
+    fast_->setToolTip("复杂组合门可取消勾选以加强分析，耗时可能增加。两种模式都需要校对草稿。");
+    right->addWidget(fast_);
+    connect(fast_, &QCheckBox::toggled, this, [this] { invalidateDraft(); });
     auto *credentialRow = new QHBoxLayout;
     remember_ = new QCheckBox("在本机记住密钥");
     remember_->setChecked(true);
@@ -190,6 +195,7 @@ AiSettings AiVisionDialog::settings() const {
     AiSettings s;
     s.apiKey = key_->text().trimmed();
     s.knownGateWidth = width_->value();
+    s.fastMode = fast_->isChecked();
     s.notes = notes_->toPlainText().left(4000);
     return s;
 }
@@ -231,6 +237,7 @@ void AiVisionDialog::setBusy(bool value, const QString &message) {
     width_->setEnabled(!value);
     notes_->setEnabled(!value);
     remember_->setEnabled(!value);
+    fast_->setEnabled(!value);
     apply_->setEnabled(!value && result_.ok);
 }
 void AiVisionDialog::addPhotos() {
@@ -344,7 +351,8 @@ void AiVisionDialog::generateDraft() {
     const auto cancel = cancel_;
     auto *watcher = new QFutureWatcher<WorkResult>(this);
     invalidateDraft({});
-    setBusy(true, "正在分析照片并估算门架布局，通常需要几十秒…");
+    setBusy(true, config.fastMode ? "正在快速解析图片…完成后先预览草稿。"
+                                  : "正在分析复杂布局…耗时取决于图片和接口响应。");
     connect(watcher, &QFutureWatcher<WorkResult>::finished, this, [this, watcher] {
         const auto work = watcher->result();
         watcher->deleteLater();

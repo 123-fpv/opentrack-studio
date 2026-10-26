@@ -85,6 +85,107 @@ int main(int argc, char **argv) {
                 close(customMetrics.verticalBeamLength, 2.7) && close(custom.elevation, 1.35),
             "new custom dimensions are honored with consistent end extensions");
 
+    struct CompoundCase {
+        const char *type;
+        int columns, levels, stocks;
+        double outerWidth, outerHeight, outerDepth, passageX, passageZ;
+    };
+    const CompoundCase groups[] = {
+        {"double", 2, 1, 7, 6.2, 3.2, .1, -1.5, 0},
+        {"triple", 3, 1, 10, 9.2, 3.2, .1, -3, 0},
+        {"ladder", 1, 2, 7, 3.2, 6.2, .1, 0, 0},
+        {"cube", 1, 1, 12, 3.2, 3.2, 3.2, 0, -1.5},
+        {"cube-stack", 1, 2, 20, 3.2, 6.2, 3.2, 0, -1.5},
+    };
+    for (const auto &group : groups) {
+        auto item = ot::makeGate(QString::fromLatin1(group.type));
+        const auto shape = ot::gateFrameMetrics(item);
+        const auto stocks = ot::gateFrameBeams(item);
+        require(shape.columns == group.columns && shape.levels == group.levels &&
+                    close(item.width, 3) && close(item.height, 3),
+                "compound dimensions retain per-cell centerline spacing");
+        require(stocks.size() == group.stocks && close(shape.outerWidth, group.outerWidth) &&
+                    close(shape.outerHeight, group.outerHeight) &&
+                    close(shape.outerDepth, group.outerDepth),
+                "compound has the expected unique stock count and whole-group bounds");
+        QVector3D low(1e6f, 1e6f, 1e6f), high = -low;
+        for (qsizetype i = 0; i < stocks.size(); ++i) {
+            const auto &stock = stocks[i];
+            const auto a = stock.center - stock.size / 2;
+            const auto b = stock.center + stock.size / 2;
+            int longSides = 0, thinSides = 0;
+            for (int axis = 0; axis < 3; ++axis) {
+                low[axis] = std::min(low[axis], a[axis]);
+                high[axis] = std::max(high[axis], b[axis]);
+                longSides += close(stock.size[axis], 3.2);
+                thinSides += close(stock.size[axis], .1);
+            }
+            require(longSides == 1 && thinSides == 2,
+                    "every compound stock is exactly 3.2 by 0.1 by 0.1 metres");
+            for (qsizetype j = 0; j < i; ++j)
+                require(stock.center != stocks[j].center || stock.size != stocks[j].size,
+                        "shared walls and joints contain no duplicate stock cuboids");
+        }
+        require(close(high.x() - low.x(), shape.outerWidth) &&
+                    close(high.y() - low.y(), shape.outerHeight) &&
+                    close(high.z() - low.z(), shape.outerDepth) &&
+                    close(low.y() + item.elevation, 0),
+                "compound metric bounds agree with all physical beams and the floor");
+        auto passage = ot::gatePassagePosition(item);
+        require(close(passage.x(), group.passageX) && close(passage.y(), group.passageZ) &&
+                    close(ot::gatePassageElevation(item), 1.6),
+                "default passage selects the leftmost lower cell and cube front wall");
+        // A passage must be in a clear cell, never in a central divider or shared wall post.
+        const QVector3D localPassage(
+            static_cast<float>(passage.x()),
+            static_cast<float>(ot::gatePassageElevation(item) - item.elevation),
+            static_cast<float>(passage.y()));
+        for (const auto &stock : stocks) {
+            const auto delta = localPassage - stock.center;
+            require(std::abs(delta.x()) > stock.size.x() / 2 ||
+                        std::abs(delta.y()) > stock.size.y() / 2 ||
+                        std::abs(delta.z()) > stock.size.z() / 2,
+                    "checkpoint center is outside every physical stock");
+        }
+        item.position = {10, 20};
+        item.yaw = 90;
+        passage = ot::gatePassagePosition(item);
+        require(close(passage.x(), 10 + group.passageZ) && close(passage.y(), 20 - group.passageX),
+                "compound passage rotates and translates with the existing yaw convention");
+        item.extra.insert(QStringLiteral("passColumn"), group.columns - 1);
+        item.extra.insert(QStringLiteral("passLevel"), group.levels - 1);
+        const auto lastColumnPassage = ot::gatePassagePosition(item);
+        require(close(lastColumnPassage.x(), 10 + group.passageZ) &&
+                    close(lastColumnPassage.y(), 20 + group.passageX),
+                "optional passage column selects the rightmost clear cell");
+        require(close(ot::gatePassageElevation(item),
+                      item.elevation + (group.levels - 1) * item.height / 2),
+                "optional passage level selects the upper clear cell");
+        ot::TrackDocument grouped;
+        grouped.gates = {item};
+        ot::TrackDocument loaded;
+        QString groupError;
+        require(ot::fromJson(ot::toJson(grouped), &loaded, &groupError) &&
+                    ot::gateFrameBeams(loaded.gates[0]).size() == group.stocks &&
+                    ot::gatePassagePosition(loaded.gates[0]) == ot::gatePassagePosition(item),
+                "compound geometry and selected passage survive project roundtrip");
+        for (const auto &field : {QStringLiteral("passColumn"), QStringLiteral("passLevel")}) {
+            const auto original = loaded.gates;
+            grouped.gates[0].extra.insert(field, -1);
+            require(!ot::fromJson(ot::toJson(grouped), &loaded, &groupError) &&
+                        loaded.gates[0].extra == original[0].extra,
+                    "negative passage indices fail without mutating the destination");
+            grouped.gates[0].extra.insert(field, .5);
+            require(!ot::fromJson(ot::toJson(grouped), &loaded, &groupError),
+                    "fractional passage indices are rejected");
+            grouped.gates[0].extra.insert(
+                field, field == QStringLiteral("passColumn") ? group.columns : group.levels);
+            require(!ot::fromJson(ot::toJson(grouped), &loaded, &groupError),
+                    "out-of-group passage indices are rejected");
+            grouped.gates[0].extra = item.extra;
+        }
+    }
+
     ot::Gate legacy;
     legacy.id = QStringLiteral("legacy-dimension-fixture");
     legacy.width = 4.8;
@@ -96,6 +197,12 @@ int main(int argc, char **argv) {
                 close(legacyMetrics.horizontalBeamLength, 4.8) &&
                 close(legacyMetrics.verticalBeamLength, 1.9 + oldThickness),
             "unmarked old projects retain their earlier bar dimensions");
+    legacy.type = QStringLiteral("ladder");
+    legacy.extra.insert(QStringLiteral("passLevel"), 1);
+    require(ot::gateFrameMetrics(legacy).levels == 1 &&
+                close(ot::gatePassageElevation(legacy), legacy.elevation) &&
+                ot::gatePassagePosition(legacy) == legacy.position,
+            "legacy unmarked groups retain their old whole-frame dimensions and passage");
     ot::TrackDocument before;
     before.gates = {legacy, gate, pillar};
     ot::TrackDocument restored;
@@ -129,6 +236,6 @@ int main(int argc, char **argv) {
     if (!failures)
         std::cout
             << "PASS: stock beam geometry, centerline/opening/outer dimensions, slim pillars, "
-               "custom sizes and legacy compatibility.\n";
+               "compound stocks/passages, custom sizes and legacy compatibility.\n";
     return failures ? 1 : 0;
 }

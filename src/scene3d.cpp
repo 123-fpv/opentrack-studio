@@ -29,6 +29,19 @@
 #include <vector>
 
 namespace ot {
+
+QVector3D editorAxisDirection(Qt::Axis editorAxis) {
+    switch (editorAxis) {
+    case Qt::XAxis:
+        return {1, 0, 0};
+    case Qt::YAxis:
+        return {0, 0, 1};
+    case Qt::ZAxis:
+        return {0, 1, 0};
+    }
+    return {};
+}
+
 namespace {
 constexpr double Pi = 3.14159265358979323846;
 constexpr float FieldOfView = 42.0f;
@@ -52,7 +65,7 @@ QVector3D point3(const Gate &gate) {
 
 QVector3D passage3(const Gate &gate) {
     const QPointF passage = gatePassagePosition(gate);
-    return {static_cast<float>(passage.x()), static_cast<float>(gate.elevation),
+    return {static_cast<float>(passage.x()), static_cast<float>(gatePassageElevation(gate)),
             static_cast<float>(passage.y())};
 }
 
@@ -141,6 +154,11 @@ void buildGate(Batch &batch, const Gate &gate, bool selected = false) {
         const auto b2 = gatePoint(gate, {w * .29f, h / 2 - h * .23f, .06f});
         const auto c2 = gatePoint(gate, {.08f, h / 2 - h * .24f, .012f});
         triangle(batch, a2, b2, c2, QColor("#f4f4f4"));
+        return;
+    }
+    if (metrics.centerlineModel) {
+        // The model/export share every physical stock: no legacy dividers or duplicate walls.
+        frame(batch, gate, 0, color);
         return;
     }
     const bool cube = gate.type == QStringLiteral("cube");
@@ -376,31 +394,47 @@ struct Scene3D::Impl {
         QString best;
         double bestScore = std::numeric_limits<double>::max();
         for (const auto &item : document->gates) {
-            const float w = static_cast<float>(item.width / 2),
-                        h = static_cast<float>(item.height / 2);
-            const std::array<QVector3D, 4> corners{
-                {gatePoint(item, {-w, -h, 0}), gatePoint(item, {w, -h, 0}),
-                 gatePoint(item, {w, h, 0}), gatePoint(item, {-w, h, 0})}};
-            QPolygonF polygon;
+            const auto metrics = gateFrameMetrics(item);
+            const float w = static_cast<float>(metrics.centerlineModel ? metrics.outerWidth / 2
+                                                                       : item.width / 2),
+                        h = static_cast<float>(metrics.centerlineModel ? metrics.outerHeight / 2
+                                                                       : item.height / 2);
+            const float halfDepth = static_cast<float>(metrics.centerDepth / 2);
+            const std::array<QVector3D, 8> corners{
+                {gatePoint(item, {-w, -h, -halfDepth}), gatePoint(item, {w, -h, -halfDepth}),
+                 gatePoint(item, {w, h, -halfDepth}), gatePoint(item, {-w, h, -halfDepth}),
+                 gatePoint(item, {-w, -h, halfDepth}), gatePoint(item, {w, -h, halfDepth}),
+                 gatePoint(item, {w, h, halfDepth}), gatePoint(item, {-w, h, halfDepth})}};
             QPointF center;
             double depth = 0;
             if (!project(point3(item), &center, &depth))
                 continue;
-            for (const auto &corner : corners) {
-                QPointF point;
-                if (project(corner, &point))
-                    polygon.append(point);
-            }
-            if (polygon.size() != 4)
-                continue;
             double hitDistance = std::numeric_limits<double>::max();
-            for (int i = 0; i < 4; ++i)
-                hitDistance = std::min(hitDistance,
-                                       segmentDistance(position, polygon[i], polygon[(i + 1) % 4]));
+            QRectF projectedBounds;
+            bool inside = false;
+            for (const auto &face :
+                 {std::array<int, 4>{0, 1, 2, 3}, std::array<int, 4>{4, 5, 6, 7},
+                  std::array<int, 4>{0, 4, 7, 3}, std::array<int, 4>{1, 5, 6, 2},
+                  std::array<int, 4>{0, 1, 5, 4}, std::array<int, 4>{3, 2, 6, 7}}) {
+                QPolygonF polygon;
+                for (const int corner : face) {
+                    QPointF point;
+                    if (project(corners[corner], &point))
+                        polygon.append(point);
+                }
+                if (polygon.size() != 4)
+                    continue;
+                projectedBounds = projectedBounds.united(polygon.boundingRect());
+                inside = inside || polygon.containsPoint(position, Qt::OddEvenFill);
+                for (int i = 0; i < 4; ++i)
+                    hitDistance = std::min(
+                        hitDistance, segmentDistance(position, polygon[i], polygon[(i + 1) % 4]));
+                if (halfDepth == 0)
+                    break;
+            }
             const double projectedSpan =
-                std::max(polygon.boundingRect().width(), polygon.boundingRect().height());
+                std::max(projectedBounds.width(), projectedBounds.height());
             const double threshold = std::clamp(projectedSpan * .15, 6.0, 14.0);
-            const bool inside = polygon.containsPoint(position, Qt::OddEvenFill);
             QPointF label;
             const bool hasLabel = project(point3(item) + QVector3D(0, h, 0), &label);
             label.ry() -= 14;
@@ -427,7 +461,9 @@ struct Scene3D::Impl {
         bool hasBounds = false;
         if (document) {
             for (const auto &item : document->gates) {
-                const double half = std::max(2.0, gateFrameMetrics(item).outerWidth / 2 + .5);
+                const auto metrics = gateFrameMetrics(item);
+                const double half =
+                    std::max(2.0, std::max(metrics.outerWidth, metrics.outerDepth) / 2 + .5);
                 const QRectF one(item.position.x() - half, item.position.y() - half, half * 2,
                                  half * 2);
                 bounds = hasBounds ? bounds.united(one) : one;
@@ -480,7 +516,8 @@ struct Scene3D::Impl {
         if (document) {
             for (const auto &item : document->gates) {
                 buildGate(solids, item, item.id == selected);
-                const float w = static_cast<float>(std::max(item.width * .65, .7));
+                const float w =
+                    static_cast<float>(std::max(gateFrameMetrics(item).outerWidth * .65, .7));
                 const QVector3D center(
                     static_cast<float>(item.position.x() + item.elevation * .24), .016f,
                     static_cast<float>(item.position.y() + item.elevation * .16));
@@ -508,15 +545,26 @@ struct Scene3D::Impl {
                     const auto metrics = gateFrameMetrics(item);
                     const float halfW = static_cast<float>(metrics.outerWidth / 2 + .15);
                     const float halfH = static_cast<float>(metrics.outerHeight / 2 + .15);
-                    const auto a0 = gatePoint(item, {-halfW, -halfH, -.015f});
-                    const auto b0 = gatePoint(item, {halfW, -halfH, -.015f});
-                    const auto c0 = gatePoint(item, {halfW, halfH, -.015f});
-                    const auto d0 = gatePoint(item, {-halfW, halfH, -.015f});
+                    const float halfD = static_cast<float>(metrics.outerDepth / 2 + .15);
                     const QColor selectionColor("#161616");
-                    line(selection, a0, b0, selectionColor);
-                    line(selection, b0, c0, selectionColor);
-                    line(selection, c0, d0, selectionColor);
-                    line(selection, d0, a0, selectionColor);
+                    const QVector<float> depths = metrics.centerDepth > 0
+                                                      ? QVector<float>{-halfD, halfD}
+                                                      : QVector<float>{-.015f};
+                    for (const float z : depths) {
+                        const auto a0 = gatePoint(item, {-halfW, -halfH, z});
+                        const auto b0 = gatePoint(item, {halfW, -halfH, z});
+                        const auto c0 = gatePoint(item, {halfW, halfH, z});
+                        const auto d0 = gatePoint(item, {-halfW, halfH, z});
+                        line(selection, a0, b0, selectionColor);
+                        line(selection, b0, c0, selectionColor);
+                        line(selection, c0, d0, selectionColor);
+                        line(selection, d0, a0, selectionColor);
+                    }
+                    if (metrics.centerDepth > 0)
+                        for (const float x : {-halfW, halfW})
+                            for (const float y : {-halfH, halfH})
+                                line(selection, gatePoint(item, {x, y, -halfD}),
+                                     gatePoint(item, {x, y, halfD}), selectionColor);
                     line(selection,
                          {static_cast<float>(item.position.x()), .03f,
                           static_cast<float>(item.position.y())},
@@ -635,8 +683,10 @@ struct Scene3D::Impl {
             for (qsizetype i = 0; i < document->gates.size(); ++i) {
                 const auto &item = document->gates[i];
                 QPointF point;
-                if (!project(point3(item) + QVector3D(0, static_cast<float>(item.height / 2), 0),
-                             &point))
+                const auto metrics = gateFrameMetrics(item);
+                const float top = static_cast<float>(
+                    metrics.centerlineModel ? metrics.outerHeight / 2 : item.height / 2);
+                if (!project(point3(item) + QVector3D(0, top, 0), &point))
                     continue;
                 point.ry() -= 14;
                 if (point.x() < 12 || point.x() > q->width() - 12 || point.y() < 12 ||
@@ -685,13 +735,41 @@ struct Scene3D::Impl {
             const QPointF end = base + QPointF(projected.x(), -projected.y()) * 23;
             painter.setPen(QPen(color, 2.3, Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(base, end);
-            painter.setPen(color);
-            painter.drawText(QRectF(end.x() - 6, end.y() - 10, 20, 16), Qt::AlignCenter, name);
+            painter.setPen(QPen(QColor("#c2c2c2"), .8));
+            painter.setBrush(QColor(255, 255, 255, 245));
+            painter.drawEllipse(end, 8, 8);
+            // Small vector glyphs remain readable even when a fallback platform
+            // has no usable system font database.
+            painter.save();
+            painter.translate(end);
+            painter.setPen(
+                QPen(QColor("#222222"), 1.25, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+            QPainterPath glyph;
+            if (name == QStringLiteral("X")) {
+                glyph.moveTo(-3, -3.5);
+                glyph.lineTo(3, 3.5);
+                glyph.moveTo(-3, 3.5);
+                glyph.lineTo(3, -3.5);
+            } else if (name == QStringLiteral("Y")) {
+                glyph.moveTo(-3, -3.5);
+                glyph.lineTo(0, 0);
+                glyph.lineTo(3, -3.5);
+                glyph.moveTo(0, 0);
+                glyph.lineTo(0, 3.5);
+            } else {
+                glyph.moveTo(-3, -3.5);
+                glyph.lineTo(3, -3.5);
+                glyph.lineTo(-3, 3.5);
+                glyph.lineTo(3, 3.5);
+            }
+            painter.drawPath(glyph);
+            painter.restore();
         };
         painter.setFont(QFont(QStringLiteral("Segoe UI"), 8, QFont::DemiBold));
-        axis({1, 0, 0}, QColor("#282828"), QStringLiteral("X"));
-        axis({0, 1, 0}, QColor("#777777"), QStringLiteral("Y"));
-        axis({0, 0, 1}, QColor("#a0a0a0"), QStringLiteral("Z"));
+        axis(editorAxisDirection(Qt::XAxis), QColor("#626262"), QStringLiteral("X"));
+        axis(editorAxisDirection(Qt::YAxis), QColor("#949494"), QStringLiteral("Y"));
+        axis(editorAxisDirection(Qt::ZAxis), QColor("#222222"), QStringLiteral("Z"));
     }
 
     void paintSoftware(QPainter &painter) {
@@ -898,22 +976,24 @@ void Scene3D::refreshGeometry() {
 }
 
 void Scene3D::fitTrack() {
-    const QRectF bounds = d_->contentBounds.adjusted(-1.5, -1.5, 1.5, 1.5);
     float maxY = 2.4f, minY = 0;
     std::vector<QVector3D> fitPoints;
     if (d_->document) {
         for (const auto &gate : d_->document->gates) {
-            maxY = std::max(maxY, static_cast<float>(gate.elevation + gate.height / 2));
-            minY = std::min(minY, static_cast<float>(gate.elevation - gate.height / 2));
             const auto metrics = gateFrameMetrics(gate);
+            maxY = std::max(maxY, static_cast<float>(gate.elevation + metrics.outerHeight / 2));
+            minY = std::min(minY, static_cast<float>(gate.elevation - metrics.outerHeight / 2));
             const float halfWidth = static_cast<float>(metrics.outerWidth / 2 + .15);
             const float halfHeight = static_cast<float>(metrics.outerHeight / 2 + .15);
+            const float halfDepth = static_cast<float>(metrics.outerDepth / 2);
             for (const float x : {-halfWidth, halfWidth})
                 for (const float y : {-halfHeight, halfHeight})
-                    fitPoints.push_back(gatePoint(gate, {x, y, 0}));
+                    for (const float z : {-halfDepth, halfDepth})
+                        fitPoints.push_back(gatePoint(gate, {x, y, z}));
         }
         const auto &doc = *d_->document;
-        if (doc.showBackground && !doc.background.isNull()) {
+        // Once components exist, image legends and blank margins must not shrink the track.
+        if (doc.gates.isEmpty() && doc.showBackground && !doc.background.isNull()) {
             const double x0 = doc.backgroundOrigin.x(), z0 = doc.backgroundOrigin.y();
             const double x1 = x0 + doc.background.width() * doc.metersPerPixel;
             const double z1 = z0 + doc.background.height() * doc.metersPerPixel;
@@ -924,10 +1004,26 @@ void Scene3D::fitTrack() {
     }
     for (size_t i = 0; i < d_->route.size(); i += 4)
         fitPoints.push_back(d_->route[i]);
-    if (fitPoints.empty())
+    if (fitPoints.empty()) {
+        const QRectF bounds = d_->contentBounds.adjusted(-1.5, -1.5, 1.5, 1.5);
         for (const double x : {bounds.left(), bounds.right()})
             for (const double z : {bounds.top(), bounds.bottom()})
                 fitPoints.emplace_back(static_cast<float>(x), 0, static_cast<float>(z));
+    }
+    QVector3D minimum = fitPoints.front(), maximum = minimum;
+    for (const auto &point : fitPoints) {
+        minimum.setX(std::min(minimum.x(), point.x()));
+        minimum.setY(std::min(minimum.y(), point.y()));
+        minimum.setZ(std::min(minimum.z(), point.z()));
+        maximum.setX(std::max(maximum.x(), point.x()));
+        maximum.setY(std::max(maximum.y(), point.y()));
+        maximum.setZ(std::max(maximum.z(), point.z()));
+    }
+    const QRectF bounds =
+        QRectF(QPointF(minimum.x(), minimum.z()), QPointF(maximum.x(), maximum.z()))
+            .adjusted(-1.5, -1.5, 1.5, 1.5);
+    minY = std::min(minY, minimum.y());
+    maxY = std::max(maxY, maximum.y());
     d_->target = {static_cast<float>(bounds.center().x()), (maxY + minY) * .42f,
                   static_cast<float>(bounds.center().y())};
     const double yaw = d_->azimuth * Pi / 180, pitch = d_->pitch * Pi / 180;

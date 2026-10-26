@@ -14,6 +14,7 @@ struct AiSettings {
     QString model = QStringLiteral("deepseek-flash");
     QString apiKey;
     double knownGateWidth = 3.0; // Reference frame centreline spacing, never pillar thickness.
+    bool fastMode = true;
     QString notes;
 };
 

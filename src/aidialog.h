@@ -32,6 +32,7 @@ class AiVisionDialog final : public QDialog {
     QDoubleSpinBox *width_ = nullptr;
     QPlainTextEdit *notes_ = nullptr;
     QCheckBox *remember_ = nullptr;
+    QCheckBox *fast_ = nullptr;
     QLabel *state_ = nullptr;
     QProgressBar *progress_ = nullptr;
     QPushButton *generate_ = nullptr, *test_ = nullptr, *apply_ = nullptr, *add_ = nullptr,
