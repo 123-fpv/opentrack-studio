@@ -123,18 +123,28 @@ double gatePassageElevation(const Gate &gate);
 struct RouteStepGeometry {
     bool valid = false;
     QVector3D position, normal, right, up; // World coordinates; right x up = traversal normal.
+    // The physical checkpoint plane above stays centred on its aperture. Path-only
+    // offsets/tangents preserve observed oblique crossings without moving native triggers.
+    QVector3D pathPosition, pathTangent;
     double openingWidth = 0, openingHeight = 0;
 };
 
 // Front/back are available on planar frames. Cubes also expose left/right/top/bottom
 // of the selected cell. Default face normals point into that cell; reverse flips
 // normal/right. Guide positions follow their anchor's movement, yaw and dimensions.
+// Optional pass extra.apertureU/V are normalized half-opening offsets in the
+// face-local right/up basis BEFORE reverse. They must retain the preview clearance.
+// extra.flightTangent is a signed direction in normalized gate-anchor axes; its
+// world direction must lie in the accepted normal hemisphere. Missing hints use
+// the physical aperture centre/normal. Reverse editing must reverse a saved tangent.
 RouteStepGeometry routeStepGeometry(const TrackDocument &document, const RouteStep &step);
 QVector3D routeStepPosition(const TrackDocument &document, const RouteStep &step);
 QVector3D routeStepNormal(const TrackDocument &document, const RouteStep &step);
 QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document);
 // Explicit user-selected correction patterns; this does not infer a maneuver from a symbol.
 // Unsupported shape/pattern combinations return an empty vector.
+// upright-{left,right}-{up,down} winds a vertical local-Y post while continuously
+// advancing between two distinct levels; it never returns to the initial aperture.
 QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern);
 // CW/CCW bar orbits are viewed along local +X, with +Z right and +Y up.
 // Arc hints use extra.curveMode="arc-v1" and finite extra.curveTangent vectors
@@ -149,7 +159,7 @@ struct RouteCurveResult {
 };
 double routePreviewClearance();
 RouteCurveResult routeCurve(const TrackDocument &document);
-// Explicit routes retain every portal centre and traversal normal. Constrained
+// Explicit routes retain every path crossing and its flight tangent. Constrained
 // local curves are checked against stock beams and ground clearance. If no safe
 // join exists, diagnostics retain disconnected safe strokes. This compatibility
 // API returns only the first stroke; use routeCurve to retrieve all safe strokes.

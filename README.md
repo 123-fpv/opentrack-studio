@@ -2,11 +2,13 @@
 
 <img src="assets/app-icon.svg" width="72" alt="OpenTrack Studio 应用图标">
 
-用图片搭建 FPV 赛道的 C++ 桌面编辑器。**0.1.5 预览版**支持顺、逆时针绕横杆、日字门上下绕行和重力门圆弧俯冲/爬升。实体障碍与有序过门步骤分开，同一座门可多次穿越，不必复制实体。导入俯视图生成草稿，在 3D 中校对窗口、方向和顺序，再导出供 VelociDrone 导入的 `.trk` 文件。
+用图片搭建 FPV 赛道的 C++ 桌面编辑器。**0.1.6 预览版**按路线与遮挡关系表达连续进出门：绕立柱的同时升降、进入另一层开口，或沿联门依次推进，不先回到原窗口再升高。实体与过门步骤分开，同一座门可多次穿越而不复制杆件。导入设计图生成草稿，在实际 3D 动作预览中核对入口、出口、换层和绕行侧，再导出 VelociDrone `.trk`。
 
 **无需应用账号登录，工程保存在本机。** 平面图识别完全在本地运行；可选的实拍 AI 功能仅在点击“生成草稿”后，将选定照片发送到 DeepSeek 官方 API。界面、图标、示例赛道和实现代码独立编写，源码采用 MIT 许可证。
 
-![OpenTrack Studio 默认 3D 编辑场景](docs/studio-preview.png)
+![连续绕立柱并换层的 3D 动作预览](docs/threading-preview.png)
+
+先打开公开合成示例 [threading-demo.otproj](examples/threading-demo.otproj) 查看推进动作；示例与截图均不包含用户提供的原图。基础操作见 [快速上手](docs/quickstart.md)。
 
 ## 当前功能
 
@@ -17,17 +19,20 @@
 - 在场景中摆放、选择、拖动、旋转门架，调整尺寸和中心高度。
 - 地面使用 X / Y 坐标，Z 向上。标准门及组合门每格横、竖中心距 3 m，杆长 3.2 m、截面 0.1 × 0.1 m；转向柱默认同截面、长 3.2 m。
 - “实体组件”与“过门步骤”两个列表：实体标为 G1、G2，过门次数单独编号；重复穿门只增加步骤。
-- 每次穿越可单独选择列、层、前后或立方体各面及反转方向；手动动作提供横杆顺/逆时针完整绕行、日字门半绕、联门交替穿越及重力门圆弧俯冲/爬升，示意图箭头显示所选方向。
+- 每次穿越可单独选择列、层、前后或立方体各面及反转方向。识别后默认选择“当前识别路线 · 连续绕杆”，3D 动作预览保留已识别的进出关系，选择本项不会重写路线。
+- 手动动作提供绕左/右立柱上升或下降、绕中横杆换层、联门交替穿越及重力门俯冲/爬升；旧的闭环整圈动作另列为高级选项，不替代图中连续推进。
 - 独立设置起飞架的位置、基点高度和朝向，起飞点不占过门编号，默认不创建降落点。
 - 选中门架后显示属性；比例和底图高级设置默认收起。
-- 3D 显示实际穿越窗口、编号、方向箭头和绕行引导点；曲线保留穿越中心和方向，按模型检查 0.20 m 预览净空，长度包含垂直行程。无法平滑连接时会提示，无法安全连接时断开显示。
-- 普通引导点只用于工程预览；完整绕圈动作另带 T 辅助翻绕检查点，按路线顺序导出到模拟器，不增加实体杆件。
+- 3D 显示实际窗口、过门点、入口/出口箭头和绕行引导点；曲线使用孔内偏移及斜向飞行切线，按模型检查 0.20 m 预览净空。无法平滑连接会提示，无法安全连接则断开显示。
+- 关键外侧 T 翻绕检查点随实际穿门顺序导出，用于约束绕行侧；普通拟合引导点留在工程中，不把所有采样点变成隐藏关卡。两者都不增加实体杆件。
 - 将完整工程保存为 `.otproj`，底图随工程嵌入。
 - 导入、导出 VelociDrone `.trk`；新建方梁标准门、起终点门、转向柱及上述组合门均支持导出。
 
 本地识别面向清晰、平整且符合上述样式的设计图；简单蓝色图使用基础检测，不能保证还原复杂组合及门序。照片、透视图、其他配色或完整软件截图可能漏检、误检；建议先裁出赛道区域。真实高度、通过方向、交叉及重复穿门仍需校对。连续导入时以最后一次为准，识别期间的工程编辑不会被旧结果覆盖。第一次使用可先看 [快速上手](docs/quickstart.md)，更多设置见 [使用说明](docs/usage.md)。
 
-识别会沿图中路线和箭头推断窗口访问顺序，不因门型相同就补齐隐藏窗口或完整 360° 绕圈。有证据的侧视半绕保留曲率和顺逆方向；正视投影无法确定绕行轴或前后关系时会标记待校对。手动绕圈的顺逆以**从门的左侧沿横杆看向右侧（组件本地 +X），竖直朝上**的侧视图为准，以动作预览箭头核对。手动“应用动作”会替换该实体已有的过门动作，可撤销。
+识别结合路线箭头、可见线段与杆件遮挡关系推断进出、深度和升降，不因门型相同就补齐未经过的窗口或闭环整圈。正视图有足够遮挡证据时也可生成连续推进；线索不足、路线断裂或遮挡无法区分时才标记待校对。选中实体可直接检查当前识别路线的 3D 预览；手动选择其他模板并“应用动作”会替换该实体原有动作，可撤销。
+
+孔内偏移和斜向切线描述的是预览过门点，不改变原生门框完整窗口的中心、大小和接受方向。`.otproj` 保留拟合轨迹与实体关联；`.trk` 只保存实际窗口及明确标记的关键 T 检查点，不能恢复全部预览采样。旧 [circle-demo.otproj](examples/circle-demo.otproj) 保留为高级闭环整圈示例，与推进示例分别使用。
 
 0.20 m 净空是模型预览检查，不是试飞、动力学或比赛判定保证。保守绕行可能保留不连续的局部切向；出现警告后应调整组件或引导点，再在模拟器中验收。
 
@@ -35,9 +40,9 @@
 
 ## VelociDrone 兼容状态
 
-项目包含独立实现的原生 `.trk` 读写。**本程序 C++ 导出的测试赛道已通过安装版 VelociDrone 导入和场景载入，完整试飞尚未完成。** 独立兼容性测试文件也已被接受；F9 试飞因遥控器未配置而中止，窗口触发、碰撞和起飞位仍需飞行验收。
+项目包含独立实现的原生 `.trk` 读写。此前 C++ 兼容性测试赛道已通过安装版 VelociDrone 导入和场景载入；**完整试飞尚未完成。** F9 试飞因遥控器未配置而中止。0.1.6 的推进动作已做独立数值及几何回归，实际窗口触发、碰撞和全程飞行仍需验收。
 
-0.1.5 修正了新建或编辑后方梁赛道的原生检查点接受方向，按模拟器本地 −X 写入。0.1.4 保存的工程应在新版核对箭头并重新导出 `.trk`；已有导出文件不会自动更新。要更新旧工程的绕杆路径，请重新应用动作或从原图重新生成。完整绕圈及其 T 辅助检查点仍需真实飞行确认。
+原生检查点按模拟器本地 −X 接受方向写入。0.1.4 工程应核对箭头后重新导出；已有 `.trk` 不会自动更新。旧工程若误用了闭环整圈，不会被新版静默改成推进动作；请从原图重新生成，或明确选择推进模板后另存，并核对关键 T 检查点。
 
 测试范围和官方 AI 接口实测记录见 [验证记录](docs/validation.md)。
 
@@ -47,12 +52,12 @@
 
 当前目标平台为 Windows x64。需要 Visual Studio 2022 的 C++ 桌面开发工具、CMake 和 Qt 6.8.3 的 MSVC 2022 x64 组件。原生 `.trk` 加解密使用 Windows BCrypt；应用运行时不需要 Python。
 
-在仓库目录运行，替换下面的 Qt 安装路径：
+在仓库目录运行，替换 Qt 路径。以下将构建和运行包放在 D 盘；没有 D 盘时改用其他数据盘目录，源码及已安装 Qt 无需移动：
 
 ```powershell
-cmake -S . -B build -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64"
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+cmake -S . -B D:/CodexWork/OpenTrackStudio/build -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64"
+cmake --build D:/CodexWork/OpenTrackStudio/build --config Release
+ctest --test-dir D:/CodexWork/OpenTrackStudio/build -C Release --output-on-failure
 ```
 
 发布 Windows 程序时，需使用对应 Qt 版本的 `windeployqt` 收集动态库和插件，并附带第三方许可说明。构建过程和 CI 使用 Python 下载 Qt 属于开发工具链，应用功能由 C++ 实现。参见 [Qt Windows 部署文档](https://doc.qt.io/qt-6/windows-deployment.html)。
@@ -60,7 +65,7 @@ ctest --test-dir build -C Release --output-on-failure
 也可使用项目提供的打包脚本；输出目录必须为新目录或空目录：
 
 ```powershell
-./scripts/package.ps1 -QtDir "C:/Qt/6.8.3/msvc2022_64" -BuildDir build -OutputDir dist/OpenTrackStudio-Windows
+./scripts/package.ps1 -QtDir "C:/Qt/6.8.3/msvc2022_64" -BuildDir D:/CodexWork/OpenTrackStudio/build -OutputDir D:/CodexOutputs/OpenTrackStudio-Windows
 ```
 
 脚本会部署动态库、平台与图片插件、Windows Schannel TLS 插件、MSVC 可再分发运行库、使用文档和原始示例。Qt 的许可及第三方声明从官方 QtBase 6.8.3 源码归档中收集，下载内容会校验 SHA-256；已解压对应源码时可通过 `OPENTRACK_QTBASE_SOURCE` 环境变量复用。GitHub CI 在测试通过后生成便携 ZIP。
@@ -73,10 +78,10 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## English
 
-OpenTrack Studio 0.1.5 is a C++/Qt desktop editor for FPV race layouts. Physical obstacles and ordered flight steps are separate: repeat a pass, select another cell or cross another cube face without duplicating the structure. Manual actions include clockwise/counterclockwise bar orbits and curved gravity dives/climbs. Orbit direction is viewed along gate-local +X, from the beam's left end toward its right, with vertical up; check the preview arrows. Drop an overhead plan to generate a local draft; one Undo restores the pre-import project. The editor uses X/Y ground coordinates and Z height. Source images remain optional 2D references. No application login is required.
+OpenTrack Studio 0.1.6 is a C++/Qt desktop editor for FPV race layouts. Progressive wraps move around an upright while climbing or descending into another aperture; they do not return to the old opening before changing height. Physical structures and ordered passes remain separate. The default action preview shows the current recognized route in 3D, including entry, exit, depth and height inferred from visible strokes and occlusion. Manual upright-left/right-up/down actions are separate from advanced closed-circle orbits. Start with the synthetic [threading example](examples/threading-demo.otproj). No application login is required.
 
 Dropping multiple photographs opens the optional AI workflow, accepting up to 8 images. Images are sent to the official DeepSeek API only after an explicit Generate action; preview the draft before applying it. Fast generation is enabled by default, but neither mode guarantees accuracy or response time. Local diagram recognition remains offline.
 
-Stock-beam exports support standard/start gates, turning pillars and double, triple, ladder, cube and stacked-cube assemblies. Frame cells use 3 m centreline spacing and 3.2 m beams with a 0.1 m square section. Set the independent takeoff grid before exporting; no landing point is created by default. Ordinary guides remain project-only; marked T turn checkpoints in full orbits are exported in order. Side-view half-wraps require line evidence; ambiguous frontal projections never imply an extra full turn. Constrained curves retain portal centres/directions and check 0.20 m model clearance; conservative joins may warn or disconnect, and this is not flight validation.
+Stock-beam exports support standard/start gates, pillars, double/triple/ladder frames and cube assemblies. Frame cells use 3 m centreline spacing and 3.2 m beams with a 0.1 m square section. Set the independent takeoff grid before export; no landing point is created by default. Aperture offsets and oblique flight tangents shape the preview while native windows retain their full physical size and acceptance direction. Only real passes and explicitly marked essential T controls enter the native sequence; ordinary fitted guides stay in the project. Unclear strokes or occlusion still require review. Model-clearance checks do not establish flight or competition validity.
 
-Version 0.1.5 fixes native checkpoint acceptance along local −X for newly created/edited stock tracks. Re-export 0.1.4 projects; reapply actions or regenerate the draft to update older orbit paths. Interoperability fixtures passed simulator import and scene loading, but full-orbit triggers and flight acceptance remain pending. See the [usage guide](docs/usage.md), [format notes](docs/format.md), [validation record](docs/validation.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Application source is MIT licensed; Qt is dynamically linked under its applicable open-source licenses.
+Native acceptance uses local −X. Re-export older 0.1.4 stock projects after checking arrows; regenerate or deliberately replace an old closed-circle action when the intended route is progressive. Earlier interoperability fixtures passed simulator import and scene loading; full-flight validation remains pending. See the [usage guide](docs/usage.md), [format notes](docs/format.md), [validation record](docs/validation.md) and [third-party notices](THIRD_PARTY_NOTICES.md). Application source is MIT licensed; Qt is dynamically linked under its applicable open-source licenses.

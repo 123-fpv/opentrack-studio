@@ -46,7 +46,7 @@ bool containsNear(const ot::RecognitionResult &result, QPointF originalPixel, do
 // An original schematic, not a copy of a user's diagram: navy symbols with
 // magenta overpainting, a separate legend, compound cells and an entry platform.
 QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialTriple = false,
-                    int wrapSide = 0) {
+                    int wrapSide = 0, bool occlusionCourse = false) {
     QImage image(1000, 760, QImage::Format_ARGB32);
     image.fill(Qt::white);
     QPainter painter(&image);
@@ -126,11 +126,24 @@ QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialT
                 // Variable radius makes the source fit observably different
                 // from a canned circle, while reversing side reverses winding.
                 const double radius = 19 + 6 * std::sin(a * .7);
-                path.push_back({640 + wrapSide * radius * std::sin(a), 550 + 15 * std::cos(a)});
+                if (std::abs(wrapSide) > 1)
+                    path.push_back({640 + (wrapSide > 0 ? 1 : -1) * radius * std::sin(2 * a),
+                                    565 - 30.0 * j / 24});
+                else
+                    path.push_back({640 + wrapSide * radius * std::sin(a), 550 + 15 * std::cos(a)});
             }
         } else
             path += QVector<QPointF>{{600, 555}, {640, 535}};
         path += QVector<QPointF>{{720, 450}, {725, 425}, {750, 395}};
+        if (occlusionCourse) {
+            path = {{820, 420}, {820, 210}, {690, 120}, {690, 95},  {680, 88},  {670, 105},
+                    {660, 124}, {650, 105}, {640, 88},  {630, 105}, {630, 120}, {610, 110},
+                    {430, 120}, {300, 125}, {255, 145}, {250, 175}, {240, 205}, {180, 360},
+                    {250, 540}, {490, 560}, {465, 580}, {465, 607}, {450, 603}, {435, 578},
+                    {425, 580}, {425, 620}, {640, 580}, {638, 570}, {620, 557}, {605, 565},
+                    {615, 576}, {638, 562}, {646, 530}, {648, 515}, {685, 450}, {702, 450},
+                    {725, 425}, {750, 395}};
+        }
     }
     line.moveTo(path[0]);
     for (int i = 1; i < path.size(); ++i)
@@ -139,7 +152,22 @@ QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialT
     painter.drawPath(line);
     painter.drawLine(reversed ? QPointF(930, 420) : QPointF(820, 650), course[0]);
     painter.drawLine(QPointF(50, 410), QPointF(95, 410));
-    if (maneuvers) {
+    if (occlusionCourse) {
+        // The behind-frame shaft is hidden across the opening too; leaving a
+        // visible intersecting diagonal would describe a different route graph.
+        painter.setPen(QPen(Qt::white, 6));
+        painter.drawLine(QPointF(637, 568), QPointF(620, 557));
+        painter.setPen(QPen(ink, 5));
+        for (const auto p : {QPointF(690, 105), QPointF(650, 105), QPointF(465, 585),
+                             QPointF(425, 585), QPointF(648, 520)})
+            painter.drawLine(p - QPointF(4, 0), p + QPointF(4, 0));
+        painter.drawLine(QPointF(615, 109), QPointF(615, 117));
+        painter.drawLine(QPointF(625, 553), QPointF(625, 562));
+    } else if (std::abs(wrapSide) > 1) {
+        painter.setPen(QPen(ink, 5));
+        painter.drawLine(QPointF(636, 565), QPointF(644, 565));
+        painter.drawLine(QPointF(636, 535), QPointF(644, 535));
+    } else if (maneuvers) {
         // Opaque stock edges interrupt the original route at two apertures.
         // Their short, aligned line fragments must be reconnected before tracing.
         painter.setPen(QPen(ink, 5));
@@ -365,7 +393,7 @@ int main(int argc, char **argv) {
     const auto cube = passagesFor(maneuvers.document, QStringLiteral("cube"));
     check(cube.size() == 2, "visible roof/body transition creates two cube passes");
     if (cube.size() == 2)
-        check(cube[0].face == "front" && cube[1].face == "top" && cube[1].reverse,
+        check(cube[0].face != "top" && cube[1].face == "top" && cube[1].reverse,
               "body-to-roof traversal is a gravity climb");
     const auto reverse = ot::recognizeTrack(inkSchematic(true, true), manual);
     const auto reverseTriple = passagesFor(reverse.document, QStringLiteral("triple"));
@@ -385,7 +413,7 @@ int main(int argc, char **argv) {
               "reversing drawn route reverses upper/lower order without a type preset");
     const auto reverseCube = passagesFor(reverse.document, QStringLiteral("cube"));
     if (reverseCube.size() == 2)
-        check(reverseCube[0].face == "top" && reverseCube[1].face == "front",
+        check(reverseCube[0].face == "top" && reverseCube[1].face != "top",
               "opposite roof/body traversal becomes a gravity dive");
     else
         check(false, "reversed cube still exposes its visible roof/body transition");
@@ -474,6 +502,99 @@ int main(int argc, char **argv) {
               "fitted curve stays around the stock rather than cutting through it");
         check(end - begin > 30, "wrap is sampled as a smooth curve between actual passages");
     }
+
+    const auto occludedImage = inkSchematic(true, false, false, 0, true);
+    const auto occluded = ot::recognizeTrack(occludedImage, manual);
+    const auto findType = [](const ot::TrackDocument &d, const QString &type) -> const ot::Gate * {
+        for (const auto &g : d.gates)
+            if (g.type == type)
+                return &g;
+        return nullptr;
+    };
+    const auto tripleOccluded = passagesFor(occluded.document, "triple");
+    check(tripleOccluded.size() == 3, "occluded progressive triple retains three source apertures");
+    if (const auto *gate = findType(occluded.document, "triple")) {
+        const auto info = gate->extra.value("recognition").toObject();
+        check(info.value("occlusionFit").toBool(),
+              "visible and navy-covered crossings resolve frontal depth");
+        bool above = false;
+        for (const auto &step : occluded.document.routeSteps)
+            if (step.gateId == gate->id && step.kind == "guide")
+                above |= ot::routeStepGeometry(occluded.document, step).pathPosition.y() >
+                         gate->elevation + gate->height / 2 + .2;
+        check(above,
+              "triple source excursions become height above the top stock, not ground U-turns");
+        for (const auto &pass : tripleOccluded)
+            check(pass.face == "front",
+                  "three front-to-back source crossings keep the same accepted face");
+    } else
+        check(false, "progressive triple fixture remains a physical triple");
+    const auto forwardLadder = passagesFor(occluded.document, "ladder");
+    const auto reversedOccluded =
+        ot::recognizeTrack(inkSchematic(true, true, false, 0, true), manual);
+    const auto backwardLadder = passagesFor(reversedOccluded.document, "ladder");
+    check(forwardLadder.size() == 2 && backwardLadder.size() == 2,
+          "occluded upright ascent/reversal preserves two different aperture visits");
+    if (forwardLadder.size() == 2 && backwardLadder.size() == 2) {
+        check(forwardLadder[0].level == 0 && forwardLadder[1].level == 1 &&
+                  backwardLadder[0].level == 1 && backwardLadder[1].level == 0,
+              "reversed source arrows reverse actual helical height progress");
+        check(forwardLadder[0].face == forwardLadder[1].face &&
+                  backwardLadder[0].face == backwardLadder[1].face &&
+                  forwardLadder[0].face != backwardLadder[0].face,
+              "occlusion resolves same-face progressive passes and their reverse");
+    }
+    const auto mirroredOccluded = ot::recognizeTrack(occludedImage.mirrored(true, false), manual);
+    const auto *up = findType(occluded.document, "ladder"),
+               *mirrorUp = findType(mirroredOccluded.document, "ladder");
+    if (up && mirrorUp) {
+        const auto a =
+            up->extra.value("recognition").toObject().value("progressiveTurns").toArray();
+        const auto b =
+            mirrorUp->extra.value("recognition").toObject().value("progressiveTurns").toArray();
+        check(!a.isEmpty() && !b.isEmpty() &&
+                  a[0].toObject().value("signedSweepDegrees").toDouble() *
+                          b[0].toObject().value("signedSweepDegrees").toDouble() <
+                      0,
+              "mirroring source occlusion reverses upright winding without a type preset");
+    } else
+        check(false, "mirrored source keeps the upright structure");
+    const auto cubeOccluded = passagesFor(occluded.document, "cube");
+    check(cubeOccluded.size() == 2 && cubeOccluded[0].face == "left" &&
+              cubeOccluded[1].face == "top",
+          "isometric left-wall entry is not relabelled by rotating the cube to its front");
+    for (const auto &step : occluded.document.routeSteps) {
+        if (step.kind != "pass")
+            continue;
+        const auto g = ot::routeStepGeometry(occluded.document, step);
+        check(g.valid && QVector3D::dotProduct(g.pathTangent, g.normal) > .01f,
+              "observed oblique flight stays in the physical portal's accepted hemisphere");
+        check(std::abs(QVector3D::dotProduct(g.pathPosition - g.position, g.normal)) < .0001,
+              "source aperture offsets stay on the unchanged native checkpoint plane");
+    }
+    const auto edgeProgress = ot::recognizeTrack(inkSchematic(true, false, false, 2), manual);
+    if (const auto *gate = findType(edgeProgress.document, "ladder")) {
+        const auto r = gate->extra.value("recognition").toObject();
+        check(r.value("maneuverPattern").toString() == "source-progressive-upright",
+              "edge-on S plus hidden endpoints is fitted as upright progression, not a horizontal "
+              "pi snap");
+        const auto p = passagesFor(edgeProgress.document, "ladder");
+        check(p.size() == 2 && p[0].face == p[1].face && p[0].level != p[1].level,
+              "middle projected plane crossing outside the upright is not a hidden third window "
+              "pass");
+        int turns = 0;
+        bool outside = false;
+        for (const auto &step : edgeProgress.document.routeSteps)
+            if (step.gateId == gate->id && step.kind == "guide") {
+                turns += step.extra.value("raceCheckpoint").toBool();
+                outside |= std::abs(step.localGuide.x()) > 1.3f;
+            }
+        check(turns == 1 && outside,
+              "one essential side check preserves the outside-upright helix");
+        check(r.value("alongBarExtentInferred").toBool(),
+              "unobservable edge-on along-bar extent stays explicit");
+    } else
+        check(false, "edge-on progressive fixture retains its physical ladder");
 
     std::cout << (failures ? "Recognizer tests FAILED\n" : "Recognizer tests passed\n");
     return failures ? 1 : 0;

@@ -242,6 +242,19 @@ bool validateDocument(const TrackDocument &document, QString *error) {
             if (!vector3(hint, &tangent, error) || tangent.lengthSquared() < 1e-12f)
                 return fail(error, QStringLiteral("路线步骤 %1 的曲线切向量无效。").arg(step.id));
         }
+        const auto flight = step.extra.value(QStringLiteral("flightTangent"));
+        if (!flight.isUndefined()) {
+            QVector3D tangent;
+            if (step.kind != QStringLiteral("pass") || !vector3(flight, &tangent, error) ||
+                tangent.lengthSquared() < 1e-12f)
+                return fail(error, QStringLiteral("过门飞行切向量无效。"));
+        }
+        for (const auto &field : {QStringLiteral("apertureU"), QStringLiteral("apertureV")}) {
+            const auto value = step.extra.value(field);
+            if (!value.isUndefined() && (step.kind != QStringLiteral("pass") || !value.isDouble() ||
+                                         !inRange(value.toDouble(), -1, 1)))
+                return fail(error, QStringLiteral("窗口内穿越偏移必须是有限数字。"));
+        }
         const auto checkpointUp = step.extra.value(QStringLiteral("checkpointUp"));
         if (!checkpointUp.isUndefined()) {
             QVector3D up;
@@ -818,6 +831,10 @@ RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
                 geometry.openingWidth >= .1 && geometry.openingWidth <= 100 &&
                 geometry.openingHeight >= .1 && geometry.openingHeight <= 100;
         }
+        geometry.pathPosition = geometry.position;
+        geometry.pathTangent = step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false)
+                                   ? geometry.normal
+                                   : curveTangentForStep(gate, step);
         return geometry;
     }
     if (step.kind != QStringLiteral("pass") || !gate)
@@ -868,6 +885,19 @@ RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
     }
     if (geometry.openingWidth <= 0 || geometry.openingHeight <= 0)
         return {};
+    QVector3D pathLocal = local;
+    for (const auto &field : {QStringLiteral("apertureU"), QStringLiteral("apertureV")}) {
+        const auto value = step.extra.value(field);
+        if (value.isUndefined())
+            continue;
+        const bool horizontal = field == QStringLiteral("apertureU");
+        const double half = (horizontal ? geometry.openingWidth : geometry.openingHeight) / 2;
+        const double maximum = half > 0 ? std::max(0.0, 1 - (kRouteClearance + .02) / half) : 0;
+        if (!value.isDouble() || !std::isfinite(value.toDouble()) ||
+            std::abs(value.toDouble()) > maximum + 1e-7)
+            return {};
+        pathLocal += (horizontal ? right : up) * static_cast<float>(value.toDouble() * half);
+    }
     auto rotation = QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate->yaw));
     if (gate->type == QStringLiteral("dive"))
         rotation *= QQuaternion::fromAxisAndAngle(1, 0, 0, 90);
@@ -882,6 +912,14 @@ RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
     geometry.normal = rotation.rotatedVector(normal).normalized();
     geometry.right = rotation.rotatedVector(right).normalized();
     geometry.up = rotation.rotatedVector(up).normalized();
+    geometry.pathPosition = geometry.position + rotation.rotatedVector(pathLocal - local);
+    geometry.pathTangent = geometry.normal;
+    if (step.extra.contains(QStringLiteral("flightTangent"))) {
+        geometry.pathTangent = transformedCurveHint(gate, step, QStringLiteral("flightTangent"));
+        if (geometry.pathTangent.lengthSquared() < .9f ||
+            QVector3D::dotProduct(geometry.pathTangent, geometry.normal) <= .01f)
+            return {};
+    }
     geometry.valid = true;
     return geometry;
 }
@@ -964,6 +1002,53 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
                 std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(0), 0,
                            metrics.levels - 1),
                 QStringLiteral("front"));
+    } else if ((pattern == QStringLiteral("upright-left-up") ||
+                pattern == QStringLiteral("upright-left-down") ||
+                pattern == QStringLiteral("upright-right-up") ||
+                pattern == QStringLiteral("upright-right-down")) &&
+               metrics.centerlineModel && metrics.levels > 1 && metrics.centerDepth == 0 &&
+               metrics.openingWidth > .5 && metrics.openingHeight > .5) {
+        const bool left = pattern.startsWith(QStringLiteral("upright-left"));
+        const bool upward = pattern.endsWith(QStringLiteral("up"));
+        const int column = std::clamp(gate.extra.value(QStringLiteral("passColumn")).toInt(0), 0,
+                                      metrics.columns - 1);
+        const int fromLevel = upward ? 0 : metrics.levels - 1;
+        const int toLevel = upward ? metrics.levels - 1 : 0;
+        const double centerX = (column - (metrics.columns - 1) / 2.0) * gate.width;
+        const double postX = centerX + (left ? -1 : 1) * gate.width / 2;
+        const double startY = (fromLevel - (metrics.levels - 1) / 2.0) * gate.height;
+        const double advance = (toLevel - fromLevel) * gate.height;
+        const double radius = gate.width / 2;
+        const double phase = left ? 0 : 3.14159265358979323846;
+        const double sweep = (left ? 1 : -1) * 2 * 3.14159265358979323846;
+        constexpr int intervals = 16;
+        for (int i = 0; i <= intervals; ++i) {
+            const double t = double(i) / intervals, angle = phase + sweep * t;
+            const QVector3D tangent(static_cast<float>(-radius * std::sin(angle) * sweep),
+                                    static_cast<float>(advance),
+                                    static_cast<float>(radius * std::cos(angle) * sweep));
+            if (i == 0 || i == intervals) {
+                addPass(column, i == 0 ? fromLevel : toLevel, QStringLiteral("front"));
+                const auto normalized = tangent / scale;
+                steps.last().extra.insert(
+                    QStringLiteral("flightTangent"),
+                    QJsonArray{normalized.x(), normalized.y(), normalized.z()});
+            } else
+                addGuide({static_cast<float>(postX + radius * std::cos(angle)),
+                          static_cast<float>(startY + advance * t),
+                          static_cast<float>(radius * std::sin(angle))},
+                         tangent, i == intervals / 2);
+            steps.last().extra.insert(
+                QStringLiteral("maneuver"),
+                QJsonObject{{QStringLiteral("type"), QStringLiteral("upright-progressive")},
+                            {QStringLiteral("axis"), QStringLiteral("y")},
+                            {QStringLiteral("side"),
+                             left ? QStringLiteral("left") : QStringLiteral("right")},
+                            {QStringLiteral("sweepDegrees"), (left ? 1 : -1) * 360},
+                            {QStringLiteral("axialAdvance"), advance},
+                            {QStringLiteral("continuousAdvance"), true},
+                            {QStringLiteral("returnsToSameAperture"), false}});
+        }
     } else if ((pattern == QStringLiteral("orbit-bar-cw") ||
                 pattern == QStringLiteral("orbit-bar-ccw")) &&
                metrics.centerlineModel && metrics.centerDepth == 0 && metrics.openingWidth > .5 &&
@@ -1281,17 +1366,18 @@ RouteCurveResult buildConstrainedCurve(const TrackDocument &document) {
     for (const auto &step : steps) {
         const auto *gate = gates.value(step.gateId, nullptr);
         const auto geometry = geometryForStep(gate, step);
-        if (!geometry.valid || !std::isfinite(geometry.position.x()) ||
-            !std::isfinite(geometry.position.y()) || !std::isfinite(geometry.position.z())) {
+        if (!geometry.valid || !std::isfinite(geometry.pathPosition.x()) ||
+            !std::isfinite(geometry.pathPosition.y()) ||
+            !std::isfinite(geometry.pathPosition.z())) {
             result.clearanceSatisfied = false;
             result.warnings << QStringLiteral("路线含无效步骤，未跳过或虚构穿越。");
             return result;
         }
         CurveNode node;
-        node.point = geometry.position;
+        node.point = geometry.pathPosition;
         node.pass = step.kind == QStringLiteral("pass") ||
                     step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false);
-        node.direction = node.pass ? geometry.normal : curveTangentForStep(gate, step);
+        node.direction = geometry.pathTangent;
         if (!node.pass && step.extra.contains(QStringLiteral("curveTangent")) &&
             node.direction.lengthSquared() < 1e-8f)
             result.warnings << QStringLiteral("无效曲线切向提示已忽略，预览按安全连接重新计算。");
@@ -1424,7 +1510,8 @@ QByteArray curveKey(const TrackDocument &document) {
              << step.reverse << step.localGuide;
         data << (step.extra.value(QStringLiteral("curveMode")).toString() ==
                  QStringLiteral("arc-v1"));
-        for (const auto &field : {QStringLiteral("curveTangent"), QStringLiteral("checkpointUp")}) {
+        for (const auto &field : {QStringLiteral("curveTangent"), QStringLiteral("checkpointUp"),
+                                  QStringLiteral("flightTangent")}) {
             const auto raw = step.extra.value(field);
             const auto array = raw.toArray();
             if (raw.isArray() && array.size() == 3)
@@ -1435,6 +1522,10 @@ QByteArray curveKey(const TrackDocument &document) {
         data << step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false)
              << step.extra.value(QStringLiteral("checkpointWidth")).toDouble(.8)
              << step.extra.value(QStringLiteral("checkpointHeight")).toDouble(.8);
+        for (const auto &field : {QStringLiteral("apertureU"), QStringLiteral("apertureV")}) {
+            const auto value = step.extra.value(field);
+            data << static_cast<int>(value.type()) << value.toDouble(0);
+        }
     }
     return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
 }

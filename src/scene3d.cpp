@@ -392,7 +392,7 @@ struct Scene3D::Impl {
         for (const auto &visual : routeVisuals) {
             QPointF point;
             if (visual.step.kind != QStringLiteral("pass") ||
-                !project(visual.geometry.position, &point) || !available.contains(point))
+                !project(visual.geometry.pathPosition, &point) || !available.contains(point))
                 continue;
             const QPointF preferred = point + QPointF(15, -17);
             const qreal width = visual.number >= 100 ? 30 : 23;
@@ -566,7 +566,7 @@ struct Scene3D::Impl {
                 if (step.kind == QStringLiteral("pass")) {
                     visual.number = ++number;
                     visual.visit = ++visits[step.gateId];
-                    const auto &p = geometry.position;
+                    const auto &p = geometry.pathPosition;
                     const QString key = QString::number(p.x(), 'f', 3) + '/' +
                                         QString::number(p.y(), 'f', 3) + '/' +
                                         QString::number(p.z(), 'f', 3);
@@ -813,16 +813,20 @@ struct Scene3D::Impl {
             for (const auto &visual : routeVisuals) {
                 const auto badge = routeBadge(visual);
                 QPointF point;
-                if (!badge.isEmpty() && project(visual.geometry.position, &point))
+                if (!badge.isEmpty() && project(visual.geometry.pathPosition, &point))
                     painter.drawLine(point, badge.center());
             }
             for (const auto &visual : routeVisuals) {
                 const auto &geometry = visual.geometry;
                 const bool active = visual.step.id == selectedStep;
                 QPointF center;
-                if (!project(geometry.position, &center))
+                if (!project(geometry.pathPosition, &center))
                     continue;
                 if (visual.step.kind == QStringLiteral("guide")) {
+                    if (!visual.turnNumber &&
+                        visual.step.extra.value(QStringLiteral("curveMode")).toString() ==
+                            QStringLiteral("arc-v1"))
+                        continue;
                     const qreal glyphRadius = active ? 6 : 4;
                     painter.setPen(QPen(QColor(active ? "#111111" : "#888888"), 1.4));
                     painter.setBrush(active ? QColor("#333333") : Qt::white);
@@ -860,12 +864,18 @@ struct Scene3D::Impl {
                     }
                 }
                 QPointF start, finish, wingA, wingB;
-                if (project(geometry.position - geometry.normal * .45f, &start) &&
-                    project(geometry.position + geometry.normal * .45f, &finish) &&
-                    project(geometry.position + geometry.normal * .22f + geometry.right * .13f,
-                            &wingA) &&
-                    project(geometry.position + geometry.normal * .22f - geometry.right * .13f,
-                            &wingB)) {
+                const auto direction = geometry.pathTangent.normalized();
+                auto wingRight =
+                    geometry.right - direction * QVector3D::dotProduct(geometry.right, direction);
+                if (wingRight.lengthSquared() < 1e-6f)
+                    wingRight = QVector3D::crossProduct(
+                        std::abs(direction.y()) > .9f ? QVector3D(0, 0, 1) : QVector3D(0, 1, 0),
+                        direction);
+                wingRight.normalize();
+                if (project(geometry.pathPosition - direction * .45f, &start) &&
+                    project(geometry.pathPosition + direction * .45f, &finish) &&
+                    project(geometry.pathPosition + direction * .22f + wingRight * .13f, &wingA) &&
+                    project(geometry.pathPosition + direction * .22f - wingRight * .13f, &wingB)) {
                     painter.setPen(QPen(Qt::white, active ? 5 : 4, Qt::SolidLine, Qt::RoundCap));
                     painter.drawLine(start, finish);
                     painter.setPen(QPen(QColor(active ? "#111111" : "#666666"), active ? 2.5 : 1.7,

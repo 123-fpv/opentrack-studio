@@ -242,6 +242,111 @@ int main(int argc, char **argv) {
     }
     require(ot::gateManeuverSteps(ladder, QStringLiteral("gravity-dive")).isEmpty(),
             "a planar ladder cannot silently become a cube gravity maneuver");
+    for (const auto &pattern :
+         {QStringLiteral("upright-left-up"), QStringLiteral("upright-left-down"),
+          QStringLiteral("upright-right-up"), QStringLiteral("upright-right-down")}) {
+        ot::TrackDocument progressive;
+        progressive.closedLoop = false;
+        progressive.routeStepsDefined = true;
+        auto frame = ot::makeGate(QStringLiteral("ladder"));
+        frame.position = {-4, 6};
+        frame.yaw = 37;
+        progressive.gates = {frame};
+        progressive.routeSteps = ot::gateManeuverSteps(frame, pattern);
+        const auto curve = ot::routeCurve(progressive);
+        require(curve.clearanceSatisfied && curve.smooth && curve.breaks.isEmpty() &&
+                    curve.points.size() > 100,
+                "progressive upright helix is dense, smooth and stock-clear");
+        denseClearance(progressive, curve);
+        QVector<ot::RouteStep> passes;
+        int turnChecks = 0;
+        for (const auto &step : progressive.routeSteps) {
+            if (step.kind == "pass")
+                passes.append(step);
+            turnChecks += step.extra.value("raceCheckpoint").toBool();
+        }
+        require(passes.size() == 2 && passes[0].level != passes[1].level && turnChecks == 1,
+                "advancing helix crosses two different apertures with no lower-return visit");
+        const auto start = ot::routeStepGeometry(progressive, passes[0]);
+        const auto end = ot::routeStepGeometry(progressive, passes[1]);
+        require(start.valid && end.valid &&
+                    QVector3D::dotProduct(start.normal, end.normal) > .99f &&
+                    std::abs(start.pathTangent.y()) > .2f && std::abs(end.pathTangent.y()) > .2f,
+                "upright advance retains same-side portal normals and climbing or descending "
+                "flight tangents");
+        qsizetype first = -1, last = -1;
+        for (qsizetype i = 0; i < curve.points.size(); ++i) {
+            if (close(curve.points[i], start.pathPosition))
+                first = i;
+            if (close(curve.points[i], end.pathPosition))
+                last = i;
+        }
+        const int advance = pattern.endsWith("up") ? 1 : -1;
+        double winding = 0, previousAngle = 0;
+        const auto inverse = QQuaternion::fromAxisAndAngle(0, 1, 0, 37).conjugated();
+        const QVector3D origin(-4, static_cast<float>(frame.elevation), 6);
+        const double postX =
+            pattern.startsWith("upright-left") ? -frame.width / 2 : frame.width / 2;
+        require(first >= 0 && last > first &&
+                    close(end.pathPosition.y() - start.pathPosition.y(), advance * frame.height),
+                "helix advances one full layer while winding, rather than returning before rising");
+        for (qsizetype i = first; i <= last && first >= 0; ++i) {
+            const auto point = inverse.rotatedVector(curve.points[i] - origin);
+            const double angle = std::atan2(point.z(), point.x() - postX);
+            if (i > first) {
+                winding += std::remainder(angle - previousAngle, 2 * 3.14159265358979323846);
+                require(
+                    (curve.points[i].y() - curve.points[i - 1].y()) * advance >= -1e-5,
+                    "axial height progresses throughout the wrap without a return-and-rise stage");
+            }
+            previousAngle = angle;
+        }
+        require(std::abs(winding - (pattern.startsWith("upright-left") ? 1 : -1) * 2 *
+                                       3.14159265358979323846) < .03,
+                "continuous advance winds the chosen physical upright in the documented direction");
+    }
+
+    ot::TrackDocument crossing;
+    crossing.closedLoop = false;
+    crossing.routeStepsDefined = true;
+    crossing.gates = {ot::makeGate()};
+    auto offsetPass = pass(crossing.gates[0]);
+    offsetPass.extra.insert("apertureU", -.4);
+    offsetPass.extra.insert("apertureV", .25);
+    offsetPass.extra.insert("flightTangent", QJsonArray{.3, .4, 1});
+    crossing.routeSteps = {offsetPass};
+    const auto offsetGeometry = ot::routeStepGeometry(crossing, offsetPass);
+    require(
+        offsetGeometry.valid && close(offsetGeometry.position, {0, 1.6f, 0}) &&
+            close(offsetGeometry.pathPosition, {-.58f, 1.9625f, 0}) &&
+            offsetGeometry.pathTangent.y() > .2f,
+        "off-centre oblique path crossing leaves the native checkpoint window centred and upright");
+    const auto offsetCurve = ot::routeCurve(crossing);
+    require(offsetCurve.clearanceSatisfied && offsetCurve.breaks.isEmpty(),
+            "oblique aperture crossing remains stock-clear");
+    denseClearance(crossing, offsetCurve);
+    bool containsCrossing = false;
+    for (const auto &point : offsetCurve.points)
+        containsCrossing |= close(point, offsetGeometry.pathPosition);
+    require(containsCrossing, "the rendered path retains the observed off-centre crossing exactly");
+    offsetPass.reverse = true;
+    offsetPass.extra.insert("flightTangent", QJsonArray{-.3, -.4, -1});
+    const auto reverseOffset = ot::routeStepGeometry(crossing, offsetPass);
+    require(reverseOffset.valid && close(reverseOffset.position, offsetGeometry.position) &&
+                close(reverseOffset.pathPosition, offsetGeometry.pathPosition) &&
+                close(reverseOffset.pathTangent, -offsetGeometry.pathTangent),
+            "reversing signed flight direction does not mirror the physical aperture offset");
+    auto badOffset = crossing;
+    badOffset.routeSteps[0].extra.insert("apertureU", .99);
+    ot::TrackDocument unchanged = crossing;
+    QString crossingError;
+    require(!ot::fromJson(ot::toJson(badOffset), &unchanged, &crossingError) &&
+                ot::toJson(unchanged) == ot::toJson(crossing),
+            "offsets that consume drone clearance are rejected without mutating the destination");
+    badOffset = crossing;
+    badOffset.routeSteps[0].extra.insert("flightTangent", QJsonArray{0, 0, -1});
+    require(!ot::fromJson(ot::toJson(badOffset), &unchanged, &crossingError),
+            "flight tangents pointing against the accepted checkpoint hemisphere are rejected");
 
     for (const auto &shape : {QStringLiteral("standard"), QStringLiteral("ladder")})
         for (const auto &pattern :

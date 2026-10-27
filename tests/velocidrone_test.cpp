@@ -654,6 +654,174 @@ int main(int argc, char **argv) {
                 "actual native import retains original direction instead of silently repairing "
                 "user intent");
     }
+    // Progressive upright wraps finish in another aperture/level. Off-centre
+    // flight traces affect preview geometry, not the native physical window.
+    for (const auto &pattern :
+         {QStringLiteral("upright-left-up"), QStringLiteral("upright-left-down"),
+          QStringLiteral("upright-right-up"), QStringLiteral("upright-right-down")}) {
+        auto progressive = course();
+        progressive.closedLoop = false;
+        auto progressiveLadder = ot::makeGate(QStringLiteral("ladder"));
+        progressiveLadder.position = {7.63, -4.27};
+        progressiveLadder.yaw = 37.17;
+        auto threadTriple = ot::makeGate(QStringLiteral("triple"));
+        threadTriple.position = {23.14, -4.27};
+        threadTriple.yaw = -53.25;
+        auto threadDouble = ot::makeGate(QStringLiteral("double"));
+        threadDouble.position = {39.26, -4.27};
+        threadDouble.yaw = 180;
+        auto leftExitCube = ot::makeGate(QStringLiteral("cube"));
+        leftExitCube.position = {55.37, -4.27};
+        auto leftExitStack = ot::makeGate(QStringLiteral("cube-stack"));
+        leftExitStack.position = {71.48, -4.27};
+        progressive.gates = {progressiveLadder, threadTriple, threadDouble, leftExitCube,
+                             leftExitStack};
+        progressive.routeStepsDefined = true;
+        progressive.routeSteps = ot::gateManeuverSteps(progressiveLadder, pattern);
+        const auto ladderVisits = passes(progressive);
+        require(ladderVisits.size() == 2 && checkpointSteps(progressive).size() == 3,
+                "progressive upright wrap has two distinct-level visits and one outer control");
+        if (ladderVisits.size() == 2) {
+            const bool upward = pattern.endsWith(QStringLiteral("up"));
+            require(ladderVisits[0].level == (upward ? 0 : 1) &&
+                        ladderVisits[1].level == (upward ? 1 : 0),
+                    "progressive upright finishes at next level without old-aperture return");
+            const auto entry = ot::routeStepGeometry(progressive, ladderVisits[0]);
+            const auto exit = ot::routeStepGeometry(progressive, ladderVisits[1]);
+            require(
+                (entry.position - exit.position).length() > 2.99f &&
+                    QVector3D::dotProduct(entry.normal, exit.normal) > .99999f,
+                "advancing upright helix retains same-facing physical passes at different heights");
+        }
+        auto addThread = [&progressive](const ot::Gate &gate, const QString &direction) {
+            auto steps = ot::gateManeuverSteps(gate, direction);
+            const double lateral = direction == QStringLiteral("right-left") ? -1 : 1;
+            QVector<int> between;
+            int visit = 0;
+            for (qsizetype i = 0; i < steps.size(); ++i) {
+                auto &step = steps[i];
+                if (step.kind == QStringLiteral("pass")) {
+                    if (!between.isEmpty()) {
+                        auto &control = steps[between[between.size() / 2]];
+                        control.extra.insert(QStringLiteral("raceCheckpoint"), true);
+                        control.extra.insert(QStringLiteral("checkpointWidth"), .8);
+                        control.extra.insert(QStringLiteral("checkpointHeight"), .8);
+                    }
+                    between.clear();
+                    step.extra.insert(QStringLiteral("apertureU"),
+                                      lateral * (visit % 2 ? -.2 : .2));
+                    step.extra.insert(QStringLiteral("apertureV"), visit % 2 ? .35 : -.35);
+                    step.extra.insert(QStringLiteral("flightTangent"),
+                                      QJsonArray{lateral * .2, visit % 2 ? -.45 : .45,
+                                                 step.face == QStringLiteral("back") ? -1 : 1});
+                    ++visit;
+                } else {
+                    step.localGuide.setY(step.localGuide.y() + (visit % 2 ? .12f : -.12f));
+                    between.append(static_cast<int>(i));
+                }
+            }
+            progressive.routeSteps += steps;
+        };
+        addThread(threadTriple, QStringLiteral("left-right"));
+        addThread(threadDouble, QStringLiteral("right-left"));
+        auto addLeftGravity = [&progressive](const ot::Gate &gate) {
+            const auto levels = ot::gateFrameMetrics(gate).levels;
+            for (int level = levels - 1; level >= 0; --level) {
+                auto roof = pass(gate, QStringLiteral("top"), 0, level);
+                roof.extra = {{QStringLiteral("apertureU"), .2},
+                              {QStringLiteral("apertureV"), -.15},
+                              {QStringLiteral("flightTangent"), QJsonArray{-.18, -1, .12}}};
+                progressive.routeSteps.append(roof);
+            }
+            ot::RouteStep interior;
+            interior.id = ot::newGateId();
+            interior.gateId = gate.id;
+            interior.kind = QStringLiteral("guide");
+            const float half = static_cast<float>(gate.width / 2), rootHalf = std::sqrt(.5f);
+            const float top = static_cast<float>((1 - levels / 2.0) * gate.height);
+            interior.localGuide = {(-half + half * rootHalf) / half,
+                                   (top - half * rootHalf) / (levels * half), 0};
+            interior.extra.insert(QStringLiteral("curveTangent"),
+                                  QJsonArray{-rootHalf, -rootHalf / levels, 0});
+            progressive.routeSteps.append(interior);
+            auto leftExit = pass(gate, QStringLiteral("left"), 0, 0, true);
+            leftExit.extra = {{QStringLiteral("apertureU"), .25},
+                              {QStringLiteral("apertureV"), -.2},
+                              {QStringLiteral("flightTangent"), QJsonArray{-1, -.18, .12}}};
+            progressive.routeSteps.append(leftExit);
+        };
+        addLeftGravity(leftExitCube);
+        addLeftGravity(leftExitStack);
+        const auto visits = passes(progressive);
+        require(visits.size() == 12 && checkpointSteps(progressive).size() == 16,
+                "progressive/thread/gravity source has twelve actual visits and four explicit "
+                "controls");
+        int displaced = 0, oblique = 0;
+        for (const auto &step : visits) {
+            const auto geometry = ot::routeStepGeometry(progressive, step);
+            require(geometry.valid, "synthetic progressive aperture/flight metadata remains valid");
+            const auto rightBeforeReverse = step.reverse ? -geometry.right : geometry.right;
+            const auto expectedPath =
+                geometry.position +
+                rightBeforeReverse *
+                    static_cast<float>(step.extra.value(QStringLiteral("apertureU")).toDouble() *
+                                       geometry.openingWidth / 2) +
+                geometry.up *
+                    static_cast<float>(step.extra.value(QStringLiteral("apertureV")).toDouble() *
+                                       geometry.openingHeight / 2);
+            require((geometry.pathPosition - expectedPath).length() < .0001f,
+                    "off-centre aperture point uses face-local axes before reverse");
+            require(QVector3D::dotProduct(geometry.pathTangent, geometry.normal) > .01f,
+                    "oblique flight stays in the accepted physical plane hemisphere");
+            displaced += (geometry.pathPosition - geometry.position).length() > .05f;
+            oblique += QVector3D::dotProduct(geometry.pathTangent, geometry.normal) < .999f;
+            if (step.face == QStringLiteral("left"))
+                require(step.reverse && geometry.normal.x() < -.999f &&
+                            near(geometry.position.x(),
+                                 (step.gateId == leftExitCube.id ? leftExitCube.position.x()
+                                                                 : leftExitStack.position.x()) -
+                                     1.5),
+                        "canonical cube/stack leaves lower LEFT face outward, not a rotated front "
+                        "substitute");
+        }
+        require(displaced >= 8 && oblique >= 10,
+                "progressive regression includes real height/depth aperture offsets and oblique "
+                "flight");
+        ot::TrackDocument savedProgressive;
+        require(ot::fromJson(ot::toJson(progressive), &savedProgressive, &error) &&
+                    ot::toJson(savedProgressive) == ot::toJson(progressive),
+                "project roundtrip retains complete progressive path metadata and anchors");
+        ot::TrackDocument nativeProgressive;
+        if (!roundtrip(path, progressive, &nativeProgressive,
+                       "progressive upright/thread/canonical-left native export"))
+            continue;
+        requireNativeCheckpoints(progressive, nativeProgressive);
+        requireRouteGeometry(progressive, nativeProgressive);
+        require(nativeProgressive.gates.size() == 5 && nativeBars(nativeProgressive).size() == 57 &&
+                    nativeGates(nativeProgressive).size() == 16 &&
+                    countPrefab(nativeBars(nativeProgressive), 422) == 1,
+                "progressive export keeps five physical groups once and interleaves only four turn "
+                "controls");
+        const auto progressiveCipher = readFile(path);
+        auto physicalWindowsOnly = progressive;
+        for (auto &step : physicalWindowsOnly.routeSteps)
+            if (step.kind == QStringLiteral("pass")) {
+                step.extra.remove(QStringLiteral("apertureU"));
+                step.extra.remove(QStringLiteral("apertureV"));
+                step.extra.remove(QStringLiteral("flightTangent"));
+            }
+        require(
+            ot::exportVelocidrone(path, physicalWindowsOnly, &error) &&
+                readFile(path) == progressiveCipher,
+            "preview aperture offsets/oblique tangents never shift or tilt the full native window");
+        auto wrongInOut = progressive;
+        wrongInOut.routeSteps[0].extra.insert(QStringLiteral("flightTangent"),
+                                              QJsonArray{0, 0, -1});
+        require(!ot::exportVelocidrone(path, wrongInOut, &error) &&
+                    readFile(path) == progressiveCipher,
+                "flight tangent opposing accepted entry/exit fails atomically instead of exporting "
+                "wrong in/out");
+    }
     auto adjacent = course();
     auto left = ot::makeGate(QStringLiteral("standard"));
     auto right = ot::makeGate(QStringLiteral("standard"));

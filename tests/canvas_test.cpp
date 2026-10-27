@@ -5,6 +5,7 @@
 #include <QEventLoop>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
+#include <QJsonArray>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QTimer>
@@ -143,6 +144,32 @@ int main(int argc, char **argv) {
         strokes == safeCurve.breaks.size() + 1,
         "actual 2D scene renders separate constrained strokes even without explicit route steps");
 
+    ot::TrackDocument offsetView;
+    offsetView.closedLoop = false;
+    offsetView.routeStepsDefined = true;
+    offsetView.gates = {ot::makeGate()};
+    ot::RouteStep crossingStep;
+    crossingStep.id = ot::newGateId();
+    crossingStep.gateId = offsetView.gates[0].id;
+    offsetView.routeSteps = {crossingStep};
+    canvas.setDocument(&offsetView);
+    canvas.fitTrack();
+    const auto centredCrossing = canvas.exportImage();
+    offsetView.routeSteps[0].extra.insert("apertureU", .55);
+    offsetView.routeSteps[0].extra.insert("flightTangent", QJsonArray{0, .4, 1});
+    canvas.refreshRoute();
+    const auto offsetGeometry = ot::routeStepGeometry(offsetView, offsetView.routeSteps[0]);
+    bool hasOffsetCrossing = false;
+    for (auto *item : canvas.scene()->items())
+        if (const auto *path = dynamic_cast<QGraphicsPathItem *>(item))
+            for (int i = 0; i < path->path().elementCount(); ++i) {
+                const auto point = path->path().elementAt(i);
+                hasOffsetCrossing |= std::abs(point.x - offsetGeometry.pathPosition.x()) < 1e-5 &&
+                                     std::abs(point.y - offsetGeometry.pathPosition.z()) < 1e-5;
+            }
+    require(offsetGeometry.valid && hasOffsetCrossing && canvas.exportImage() != centredCrossing,
+            "2D rendered curve and pass marker use the off-centre path crossing instead of the "
+            "native window centre");
     ot::TrackDocument paused;
     paused.closedLoop = false;
     paused.routeStepsDefined = true;

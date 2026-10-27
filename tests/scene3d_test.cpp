@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QImage>
+#include <QJsonArray>
 #include <QKeyEvent>
 #include <QMatrix4x4>
 #include <QMouseEvent>
@@ -323,6 +324,32 @@ int main(int argc, char **argv) {
         pickedPasses.size() == clustered.routeSteps.size(),
         "all repeated-window number badges remain individually pickable after collision layout");
     scene.onRouteSelection = {};
+    ot::TrackDocument offsetView;
+    offsetView.closedLoop = false;
+    offsetView.routeStepsDefined = true;
+    offsetView.gates = {ot::makeGate()};
+    ot::RouteStep crossingStep;
+    crossingStep.id = ot::newGateId();
+    crossingStep.gateId = offsetView.gates[0].id;
+    offsetView.routeSteps = {crossingStep};
+    scene.setDocument(&offsetView);
+    scene.fitTrack();
+    scene.selectGate(offsetView.gates[0].id);
+    scene.selectRouteStep(crossingStep.id);
+    const auto centredCrossing = scene.exportImage();
+    offsetView.routeSteps[0].extra.insert("apertureU", .55);
+    offsetView.routeSteps[0].extra.insert("apertureV", .2);
+    offsetView.routeSteps[0].extra.insert("flightTangent", QJsonArray{.2, .4, 1});
+    const auto offsetGeometry = ot::routeStepGeometry(offsetView, offsetView.routeSteps[0]);
+    scene.refreshGeometry();
+    require(
+        offsetGeometry.valid && offsetGeometry.position == QVector3D(0, 1.6f, 0) &&
+            offsetGeometry.pathPosition != offsetGeometry.position &&
+            QVector3D::dotProduct(offsetGeometry.pathTangent, offsetGeometry.normal) < .99f,
+        "offset preview keeps the physical window centred while exposing an oblique path crossing");
+    require(scene.selectedRouteStep() == crossingStep.id && scene.exportImage() != centredCrossing,
+            "actual pass badge, leader and arrow follow the offset path without losing window "
+            "selection");
     ot::TrackDocument paused;
     paused.closedLoop = false;
     paused.routeStepsDefined = true;

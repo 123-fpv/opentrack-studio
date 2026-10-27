@@ -3,8 +3,8 @@
 IDI_APP_ICON ICON "app-icon.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,1,5,0
- PRODUCTVERSION 0,1,5,0
+ FILEVERSION 0,1,6,0
+ PRODUCTVERSION 0,1,6,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -17,12 +17,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "OpenTrack Studio contributors\0"
             VALUE "FileDescription", "OpenTrack Studio\0"
-            VALUE "FileVersion", "0.1.5\0"
+            VALUE "FileVersion", "0.1.6\0"
             VALUE "InternalName", "OpenTrackStudio\0"
             VALUE "LegalCopyright", "Copyright (c) 2026 OpenTrack Studio contributors\0"
             VALUE "OriginalFilename", "OpenTrackStudio.exe\0"
             VALUE "ProductName", "OpenTrack Studio\0"
-            VALUE "ProductVersion", "0.1.5\0"
+            VALUE "ProductVersion", "0.1.6\0"
         END
     END
     BLOCK "VarFileInfo"

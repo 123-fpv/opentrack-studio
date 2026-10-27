@@ -471,7 +471,7 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
                 if (!geometry.valid)
                     continue;
                 const QPointF center =
-                    mapFromScene(QPointF(geometry.position.x(), geometry.position.z()));
+                    mapFromScene(QPointF(geometry.pathPosition.x(), geometry.pathPosition.z()));
                 const QString key =
                     QString("%1:%2").arg(qRound(center.x() / 12)).arg(qRound(center.y() / 12));
                 const int row = overlapping[key]++;
