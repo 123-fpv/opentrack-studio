@@ -17,7 +17,8 @@ QVector<NativeBlockColor> nativeBlockColors();
 NativeBlockColor nearestNativeBlockColor(const QColor &color);
 
 // Calibrated stock-frame solids are emitted once per physical component. Each
-// ordered pass gets a separate native88 checkpoint; guides stay project-only.
+// ordered pass and explicitly marked race guide gets a native88 checkpoint;
+// ordinary guides stay project-only. Native88 accepts travel along local-X.
 // Export requires an independent takeoff grid. Legacy native models and opaque
 // fields remain intact within their documented routing limits.
 // No simulator account or network is used.

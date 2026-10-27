@@ -6,6 +6,7 @@
 #include <QPainterPath>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 #include <QVector3D>
 #include <QVector>
 
@@ -27,7 +28,8 @@ struct Gate {
 struct RouteStep {
     QString id;
     QString gateId; // Physical component reference; repeated passes share this ID.
-    QString kind = QStringLiteral("pass");  // "pass" or "guide" (never a checkpoint).
+    QString kind =
+        QStringLiteral("pass"); // Guides become auxiliary checks only with extra.raceCheckpoint.
     QString face = QStringLiteral("front"); // front/back/left/right/top/bottom, in gate-local axes.
     int column = 0, level = 0;              // Zero-based cell, independent for every pass.
     bool reverse = false; // Reverse traversal, without rotating the physical gate.
@@ -134,8 +136,23 @@ QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document);
 // Explicit user-selected correction patterns; this does not infer a maneuver from a symbol.
 // Unsupported shape/pattern combinations return an empty vector.
 QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern);
-// Explicit routes retain every guide and portal centre, with short normal-aligned
-// approach/exit segments. They use no global spline that can skip a face crossing.
+// CW/CCW bar orbits are viewed along local +X, with +Z right and +Y up.
+// Arc hints use extra.curveMode="arc-v1" and finite extra.curveTangent vectors
+// in the same normalized anchor axes as localGuide. Full-circle auxiliary checks
+// explicitly set raceCheckpoint=true and checkpointWidth/checkpointHeight (metres).
+struct RouteCurveResult {
+    QVector<QVector3D> points;
+    QVector<int> breaks; // Each index starts a new disconnected, collision-free stroke.
+    QStringList warnings;
+    bool clearanceSatisfied = true;
+    bool smooth = true;
+};
+double routePreviewClearance();
+RouteCurveResult routeCurve(const TrackDocument &document);
+// Explicit routes retain every portal centre and traversal normal. Constrained
+// local curves are checked against stock beams and ground clearance. If no safe
+// join exists, diagnostics retain disconnected safe strokes. This compatibility
+// API returns only the first stroke; use routeCurve to retrieve all safe strokes.
 // The independent takeoff point is not a lap checkpoint or an implicit route step.
 QVector<QVector3D> routePolyline(const TrackDocument &document);
 double routeLength(const TrackDocument &document);

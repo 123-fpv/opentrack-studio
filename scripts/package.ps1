@@ -161,7 +161,7 @@ foreach ($name in @('app-icon.svg', 'app-icon.png', 'app-icon.ico')) {
 }
 $sampleDir = Join-Path $OutputDir 'examples'
 New-Item -ItemType Directory -Force -Path $sampleDir | Out-Null
-foreach ($name in @('example-track.png', 'example.otproj', 'example.trk')) {
+foreach ($name in @('example-track.png', 'example.otproj', 'example.trk', 'circle-demo.otproj', 'circle-demo.trk')) {
     $sample = Join-Path (Join-Path $BuildDir 'smoke') $name
     if (Test-Path -LiteralPath $sample) { Copy-Item -LiteralPath $sample -Destination $sampleDir }
 }

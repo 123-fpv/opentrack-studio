@@ -531,6 +531,151 @@ struct WindowVisit {
     bool interrupted = false;
 };
 
+// A side-on drawing establishes a height/depth cross-section. Front-facing
+// symbols do not: their screen-space loop can be an elevation change or a
+// projected turn around an upright. Preserve those samples as evidence, but do
+// not assign a 3D orbit handedness from the component type alone.
+bool sourceCrossbarWrap(const Gate &gate, const DiagramNode &node, const PrintedTrace &trace,
+                        const QVector<WindowVisit> &visits, double cell, QVector<RouteStep> *steps,
+                        QJsonObject *evidence) {
+    if (!node.edgeOn || visits.size() != 2 || visits[0].level == visits[1].level ||
+        visits[0].column != visits[1].column)
+        return false;
+    const auto metrics = gateFrameMetrics(gate);
+    const QRectF box(blobBounds(node.shape));
+    const auto crossing = [&](const WindowVisit &visit) {
+        int best = visit.first;
+        double distance = std::numeric_limits<double>::infinity();
+        for (int i = visit.first; i <= visit.last; ++i) {
+            const double d = std::abs(trace.points[i].x() - box.center().x());
+            if (d < distance) {
+                best = i;
+                distance = d;
+            }
+        }
+        return best;
+    };
+    const int first = crossing(visits[0]), last = crossing(visits[1]);
+    if (last - first < 4)
+        return false;
+    const double halfWidth = metrics.columns * gate.width / 2,
+                 halfHeight = metrics.levels * gate.height / 2, halfDepth = gate.width / 2;
+    const double fromY = (visits[0].level - (metrics.levels - 1) / 2.0) * gate.height,
+                 toY = (visits[1].level - (metrics.levels - 1) / 2.0) * gate.height,
+                 centerY = (fromY + toY) / 2, radius = std::abs(toY - fromY) / 2;
+    const double depthSign = std::sin(qDegreesToRadians(gate.yaw));
+    const auto startPixel = trace.points[first], endPixel = trace.points[last];
+    QVector<QPointF> section;
+    QJsonArray sourceCurve;
+    for (int i = first; i <= last; ++i) {
+        const double t = double(i - first) / (last - first);
+        const auto pixel = trace.points[i];
+        // Correct endpoint offsets to portal centres without erasing the
+        // original lobe/curvature. Absolute drawing depth remains estimated.
+        const double baselineX = startPixel.x() * (1 - t) + endPixel.x() * t,
+                     baselineY = startPixel.y() * (1 - t) + endPixel.y() * t;
+        const double z = (pixel.x() - baselineX) * depthSign * gate.width / cell,
+                     y = fromY * (1 - t) + toY * t -
+                         (pixel.y() - baselineY) * gate.height * metrics.levels / box.height();
+        section.push_back({z, y - centerY});
+    }
+    double angle = std::atan2(section[0].y(), section[0].x()), sweep = 0, variation = 0,
+           minimumRadius = std::numeric_limits<double>::infinity();
+    QVector<double> phases{0};
+    for (int i = 0; i < section.size(); ++i) {
+        const auto p = section[i];
+        minimumRadius = std::min(minimumRadius, std::hypot(p.x(), p.y()));
+        if (i) {
+            const double next = std::atan2(p.y(), p.x());
+            const double delta = std::remainder(next - angle, 2 * Pi);
+            sweep += delta;
+            variation += std::abs(delta);
+            angle = next;
+            phases.push_back(sweep);
+        }
+        if (i == 0 || i == section.size() - 1 ||
+            i % std::max(1, int((section.size() + 47) / 48)) == 0)
+            sourceCurve.push_back(QJsonArray{p.x() / halfDepth, (p.y() + centerY) / halfHeight});
+    }
+    const bool reliable = std::abs(sweep) > Pi * .65 && std::abs(sweep) < Pi * 1.4 &&
+                          variation < std::abs(sweep) * 2.25 && minimumRadius > gate.width * .055;
+    const int winding = sweep >= 0 ? 1 : -1;
+    QJsonObject action{
+        {QStringLiteral("type"), QStringLiteral("bar-wrap")},
+        {QStringLiteral("axis"), QStringLiteral("x")},
+        {QStringLiteral("winding"), winding},
+        {QStringLiteral("view"), QStringLiteral("along-local+X; +Z right; +Y up")},
+        {QStringLiteral("observedSweepDegrees"), qRadiansToDegrees(sweep)},
+        {QStringLiteral("sourceCurve"), sourceCurve},
+        {QStringLiteral("sourceCurveCoordinates"), QStringLiteral("normalized-local-ZY")},
+        {QStringLiteral("depthEstimated"), true},
+        {QStringLiteral("requiresReview"), true},
+        {QStringLiteral("inferredFromSideView"), reliable}};
+    if (!reliable) {
+        action.insert(QStringLiteral("ambiguous"), true);
+        evidence->insert(QStringLiteral("barWrap"), action);
+        return false;
+    }
+    QVector<RouteStep> passes;
+    for (const auto &step : *steps)
+        if (step.kind == QStringLiteral("pass"))
+            passes.push_back(step);
+    if (passes.size() != 2)
+        return false;
+    const double initialAngle = fromY > toY ? Pi / 2 : -Pi / 2;
+    // Radius is fitted from the traced lobe, bounded away from the actual stock.
+    // Sampling in polar angle retains source curvature and cannot cut the bar
+    // with the single diagonal guide used by the earlier recognizer.
+    const auto radial = [&](double t) {
+        double weighted = 0, weights = 0;
+        for (int i = 0; i < section.size(); ++i) {
+            const double phase = std::clamp(phases[i] / sweep, 0.0, 1.0), d = (phase - t) / .14;
+            const double weight = std::exp(-d * d);
+            weighted += weight * std::hypot(section[i].x(), section[i].y());
+            weights += weight;
+        }
+        const double fitted = weights > .00001 ? weighted / weights : radius;
+        const double blend = std::pow(std::sin(Pi * t), 2);
+        return radius * (1 - blend) + std::clamp(fitted, radius * .68, radius * 1.55) * blend;
+    };
+    const auto localAt = [&](double t) {
+        const double a = initialAngle + winding * Pi * t, r = radial(t);
+        return QVector3D(
+            float((visits[0].column - (metrics.columns - 1) / 2.0) * gate.width / halfWidth),
+            float((centerY + r * std::sin(a)) / halfHeight), float(r * std::cos(a) / halfDepth));
+    };
+    const double firstNormal = -std::sin(initialAngle) * winding;
+    for (auto &pass : passes)
+        pass.reverse = firstNormal < 0;
+    action.insert(QStringLiteral("sweepDegrees"), winding * 180.0);
+    action.insert(QStringLiteral("curveFit"), QStringLiteral("source-polar-radius-profile"));
+    action.insert(QStringLiteral("ambiguous"), false);
+    passes[0].extra.insert(QStringLiteral("maneuver"), action);
+    QVector<RouteStep> fitted{passes[0]};
+    constexpr int ArcSegments = 12;
+    for (int j = 1; j < ArcSegments; ++j) {
+        const double t = double(j) / ArcSegments;
+        RouteStep guide;
+        guide.id = newGateId();
+        guide.gateId = gate.id;
+        guide.kind = QStringLiteral("guide");
+        guide.localGuide = localAt(t);
+        const auto tangent = (localAt(t + .001) - localAt(t - .001)).normalized();
+        guide.extra.insert(QStringLiteral("curveMode"), QStringLiteral("arc-v1"));
+        guide.extra.insert(QStringLiteral("curveTangent"),
+                           QJsonArray{tangent.x(), tangent.y(), tangent.z()});
+        auto guideAction = action;
+        guideAction.remove(QStringLiteral("sourceCurve"));
+        guide.extra.insert(QStringLiteral("maneuver"), guideAction);
+        fitted.push_back(guide);
+    }
+    fitted.push_back(passes[1]);
+    *steps = fitted;
+    evidence->insert(QStringLiteral("barWrap"), action);
+    evidence->insert(QStringLiteral("wrapWindingInferred"), true);
+    return true;
+}
+
 QVector<RouteStep> traceComponentPasses(Gate &gate, const DiagramNode &node,
                                         const PrintedTrace &trace, double cell, int *uncertain) {
     const auto metrics = gateFrameMetrics(gate);
@@ -647,7 +792,10 @@ QVector<RouteStep> traceComponentPasses(Gate &gate, const DiagramNode &node,
     if (cube && cubeBodyLevel > 0 && !steps.isEmpty()) {
         QVector<RouteStep> visible;
         for (auto step : steps) {
-            if (step.face == QStringLiteral("front"))
+            if (step.kind == QStringLiteral("guide"))
+                step.localGuide.setY(step.localGuide.y() +
+                                     float(2.0 * cubeBodyLevel / metrics.levels));
+            else if (step.face == QStringLiteral("front"))
                 step.level = cubeBodyLevel;
             else if (step.level < cubeBodyLevel)
                 continue;
@@ -703,9 +851,47 @@ QVector<RouteStep> traceComponentPasses(Gate &gate, const DiagramNode &node,
         if (reverseInitial) {
             if (step.kind == QStringLiteral("pass"))
                 step.reverse = !step.reverse;
-            else
+            else {
                 step.localGuide.setZ(-step.localGuide.z());
+                auto tangent = step.extra.value(QStringLiteral("curveTangent")).toArray();
+                if (tangent.size() == 3) {
+                    tangent[2] = -tangent[2].toDouble();
+                    step.extra.insert(QStringLiteral("curveTangent"), tangent);
+                }
+            }
         }
+    }
+    const bool fittedWrap = sourceCrossbarWrap(gate, node, trace, visits, cell, &steps, &evidence);
+    if (!fittedWrap && visits.size() > 1 && (metrics.columns > 1 || metrics.levels > 1)) {
+        // A frontal projection does not distinguish height from near/far depth.
+        // Retain the observed curve and expose a manual orbit choice instead of
+        // silently declaring its screen-space winding to be a 3D direction.
+        QJsonArray transitions;
+        for (int j = 1; j < visits.size(); ++j) {
+            const int first = visits[j - 1].first, last = visits[j].first;
+            if (last <= first)
+                continue;
+            QJsonArray samples;
+            for (int i = first; i <= last; i += std::max(1, (last - first) / 40)) {
+                const auto p = trace.points[i];
+                samples.push_back(QJsonArray{(p.x() - box.center().x()) / (box.width() / 2),
+                                             (box.center().y() - p.y()) / (box.height() / 2)});
+            }
+            transitions.push_back(
+                QJsonObject{{QStringLiteral("type"), QStringLiteral("projected-bar-turn")},
+                            {QStringLiteral("axisCandidate"),
+                             metrics.levels > 1 ? QStringLiteral("x-or-y") : QStringLiteral("y")},
+                            {QStringLiteral("view"), QStringLiteral("source-image; X right; Y up")},
+                            {QStringLiteral("sourceCurve"), samples},
+                            {QStringLiteral("windingInferred"), false},
+                            {QStringLiteral("manualOrbitChoiceRequired"), true}});
+        }
+        evidence.insert(QStringLiteral("projectedTurns"), transitions);
+        evidence.insert(QStringLiteral("wrapWindingInferred"), false);
+        evidence.insert(QStringLiteral("manualOrbitChoiceRequired"), true);
+        ambiguous = true;
+    }
+    for (auto &step : steps) {
         step.extra.insert(
             QStringLiteral("recognition"),
             QJsonObject{{QStringLiteral("source"), QStringLiteral("printed-line-trace")},
@@ -1016,7 +1202,7 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     document.routeSteps.clear();
     document.routeStepsDefined = true;
     int ambiguousPassages = 0;
-    int compounds = 0;
+    int compounds = 0, fittedWraps = 0, manualOrbitGroups = 0;
     for (int i = 0; i < count; ++i) {
         const auto &node = nodes[size_t(order[size_t(i)])];
         Gate gate = makeGate(node.type);
@@ -1047,6 +1233,10 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         compounds += node.type != QStringLiteral("standard");
         document.routeSteps +=
             traceComponentPasses(gate, node, trace, cellPixels, &ambiguousPassages);
+        const auto routeEvidence = gate.extra.value(QStringLiteral("recognition")).toObject();
+        fittedWraps += routeEvidence.value(QStringLiteral("wrapWindingInferred")).toBool();
+        manualOrbitGroups +=
+            routeEvidence.value(QStringLiteral("manualOrbitChoiceRequired")).toBool();
         document.gates.push_back(gate);
     }
     result.detectedCount = count;
@@ -1060,6 +1250,8 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
                     {QStringLiteral("routeTracePoints"), trace.points.size()},
                     {QStringLiteral("routeOcclusionBridges"), trace.occlusions},
                     {QStringLiteral("ambiguousPassageGroups"), ambiguousPassages},
+                    {QStringLiteral("sourceFittedWraps"), fittedWraps},
+                    {QStringLiteral("manualOrbitChoiceGroups"), manualOrbitGroups},
                     {QStringLiteral("requiresReview"), true},
                     {QStringLiteral("detectedCount"), count}});
     result.warnings
@@ -1078,6 +1270,16 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         result.warnings << QStringLiteral(
             "已沿原始洋红线保留复合门的单元/层级通过顺序和重复过门；遮挡续接"
             "及三维转弯深度为估算，实体障碍数不等于通过次数。");
+    if (fittedWraps)
+        result.warnings
+            << QStringLiteral("已从侧视曲线拟合 %1 组横杆绕行弧线；顺逆方向以沿组件本地 +X 轴观察、"
+                              "+Z 向右、+Y 向上为准，深度半径仍为估算。")
+                   .arg(fittedWraps);
+    if (manualOrbitGroups)
+        result.warnings << QStringLiteral(
+                               "%1 组正视投影无法唯一确定绕竖杆/横杆及顺逆方向；保留原线证据并使用"
+                               "待校对弧线，请手动选绕杆动作，未自动增加完整 360° 通过。")
+                               .arg(manualOrbitGroups);
     if (ambiguousPassages || trace.ambiguous)
         result.warnings << QStringLiteral("有 %1 组内部路径证据不足或存在投影歧义，已标记为待校对；"
                                           "未按组件类型补齐看不见的单元，请在路线面板修正。")

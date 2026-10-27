@@ -51,6 +51,8 @@ class StudioWindow : public QMainWindow {
     QTabWidget *sequenceTabs_ = nullptr;
     QWidget *stepPanel_ = nullptr;
     QComboBox *stepFace_ = nullptr, *stepReverse_ = nullptr, *maneuver_ = nullptr;
+    QWidget *maneuverPreview_ = nullptr;
+    QLabel *maneuverHint_ = nullptr, *routeStatus_ = nullptr;
     QLabel *stepSummary_ = nullptr, *takeoffStatus_ = nullptr;
     QDoubleSpinBox *takeoffX_ = nullptr, *takeoffY_ = nullptr, *takeoffZ_ = nullptr,
                    *takeoffYaw_ = nullptr;
@@ -91,6 +93,7 @@ class StudioWindow : public QMainWindow {
     void deleteRoutePass();
     void moveRoutePass(int delta);
     void applyManeuver();
+    void updateManeuverPreview();
     void editTakeoff();
     void importImage();
     void importImagePath(const QString &path);

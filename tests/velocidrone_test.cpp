@@ -75,6 +75,66 @@ QVector<ot::RouteStep> passes(const ot::TrackDocument &doc) {
             result.append(step);
     return result;
 }
+QVector<ot::RouteStep> checkpointSteps(const ot::TrackDocument &doc) {
+    QVector<ot::RouteStep> result;
+    for (const auto &step : ot::effectiveRouteSteps(doc))
+        if (step.kind == QStringLiteral("pass") ||
+            (step.kind == QStringLiteral("guide") &&
+             step.extra.value(QStringLiteral("raceCheckpoint")).toBool()))
+            result.append(step);
+    return result;
+}
+void requireNativeCheckpoints(const ot::TrackDocument &source, const ot::TrackDocument &native) {
+    const auto steps = checkpointSteps(source);
+    const auto records = nativeGates(native);
+    require(steps.size() == records.size(),
+            "only actual passes and explicitly marked turn controls become native checkpoints");
+    int starts = 0, finishes = 0;
+    for (qsizetype i = 0; i < std::min(steps.size(), records.size()); ++i) {
+        const auto record = records[i].toObject();
+        const auto trans = record.value(QStringLiteral("trans")).toObject();
+        const auto p = trans.value(QStringLiteral("pos")).toArray();
+        const auto r = trans.value(QStringLiteral("rot")).toArray();
+        const auto scale = trans.value(QStringLiteral("scale")).toArray();
+        require(record.value(QStringLiteral("prefab")).toInt() == 88 &&
+                    record.value(QStringLiteral("gate")).toInt(-1) == i,
+                "new native checks retain strict interleaved order without branch-number guesses");
+        if (p.size() != 3 || r.size() != 4 || scale.size() != 3) {
+            require(false, "native checkpoint transform arrays have expected arity");
+            continue;
+        }
+        const QQuaternion q = QQuaternion(static_cast<float>(r[0].toDouble() / 1000),
+                                          static_cast<float>(r[1].toDouble() / 1000),
+                                          static_cast<float>(r[2].toDouble() / 1000),
+                                          static_cast<float>(r[3].toDouble() / 1000))
+                                  .normalized();
+        const auto actualUp = q.rotatedVector({0, 0, 1});
+        const auto actualNormal = q.rotatedVector({-1, 0, 0});
+        const auto actualRight = q.rotatedVector({0, -1, 0});
+        const auto actualCentre =
+            QVector3D(static_cast<float>(p[0].toDouble() / 100),
+                      static_cast<float>(p[1].toDouble() / 100),
+                      static_cast<float>(p[2].toDouble() / 100)) +
+            actualUp * static_cast<float>(.9900000095 * scale[2].toDouble() / 100);
+        const auto expected = ot::routeStepGeometry(source, steps[i]);
+        require(expected.valid && (actualCentre - expected.position).length() < .015f,
+                "independently decoded native centre respects centimetre/rotation quantization");
+        require(QVector3D::dotProduct(actualNormal, expected.normal) > .99999f &&
+                    QVector3D::dotProduct(actualRight, expected.right) > .99999f &&
+                    QVector3D::dotProduct(actualUp, expected.up) > .99999f,
+                "runtime accepted minus-X direction and full window basis match route geometry");
+        require(near(1.9286329746 * scale[1].toDouble() / 100, expected.openingWidth, .011) &&
+                    near(1.9286329746 * scale[2].toDouble() / 100, expected.openingHeight, .011),
+                "physical88 window units quantize both ordinary and turn-check apertures");
+        for (const auto &value : p)
+            require(value.toDouble() == std::round(value.toDouble()),
+                    "native root positions are integer centimetres");
+        starts += record.value(QStringLiteral("start")).toBool();
+        finishes += record.value(QStringLiteral("finish")).toBool();
+    }
+    require(starts == 1 && finishes == 1,
+            "one lap start/finish checkpoint independent of physical group count and takeoff");
+}
 bool roundtrip(const QString &path, const ot::TrackDocument &source, ot::TrackDocument *destination,
                const char *message) {
     QString error;
@@ -237,9 +297,8 @@ int main(int argc, char **argv) {
                 "per-object arbitrary RGB maps to nearest verified native solid materials");
         const auto cp = nativeGates(restored)[0].toObject();
         const auto transform = cp.value(QStringLiteral("trans")).toObject();
-        require(transform.value(QStringLiteral("rot")).toArray() ==
-                    QJsonArray{500, -500, -500, -500},
-                "measured prefab88 basis is Xnormal/Yright/Zup, not editor-helper axes");
+        require(transform.value(QStringLiteral("rot")).toArray() == QJsonArray{500, -500, 500, 500},
+                "actual CheckPoint reset-origin acceptance maps native minus-X to forward");
         require(transform.value(QStringLiteral("scale")).toArray() == QJsonArray{100, 150, 150},
                 "measured1.9286329746m trigger window requires150percent for2.9m opening");
         const auto pos = transform.value(QStringLiteral("pos")).toArray();
@@ -389,6 +448,211 @@ int main(int argc, char **argv) {
         require(patternOutput.gates.size() == 3 && nativeBars(patternOutput).size() == 38,
                 "triple+ladder+cube-stack geometry unique across all manoeuvre passes");
         requireRouteGeometry(patterns, patternOutput);
+    }
+    // Full circles require separate, visible turn controls between the repeated
+    // opening visits. Ordinary curve samples never become race constraints.
+    for (const auto &direction :
+         {QStringLiteral("orbit-bar-cw"), QStringLiteral("orbit-bar-ccw")}) {
+        auto orbit = course();
+        orbit.closedLoop = false;
+        orbit.takeoff.position = {-9.73, 8.24};
+        orbit.takeoff.elevation = .23;
+        orbit.takeoff.yaw = -37.41;
+        auto topBar = ot::makeGate(QStringLiteral("standard"));
+        topBar.position = {2.137, -4.269};
+        topBar.yaw = 37.17;
+        auto middleBar = ot::makeGate(QStringLiteral("ladder"));
+        middleBar.position = {22.314, 6.279};
+        middleBar.yaw = -58.17;
+        auto gravity = ot::makeGate(QStringLiteral("cube-stack"));
+        gravity.position = {-16.871, 24.243};
+        gravity.yaw = 127.13;
+        ot::setGateColor(topBar, QColor("#e50001"));
+        ot::setGateColor(middleBar, QColor("#00d9d9"));
+        ot::setGateColor(gravity, QColor("#8c00e6"));
+        orbit.gates = {topBar, middleBar, gravity};
+        orbit.routeStepsDefined = true;
+        const auto singleCircle = ot::gateManeuverSteps(topBar, direction);
+        const auto ladderCircle = ot::gateManeuverSteps(middleBar, direction);
+        orbit.routeSteps = singleCircle + ladderCircle;
+        orbit.routeSteps += ot::gateManeuverSteps(gravity, direction.endsWith(QStringLiteral("ccw"))
+                                                               ? QStringLiteral("gravity-climb")
+                                                               : QStringLiteral("gravity-dive"));
+        auto singleOnly = orbit;
+        singleOnly.routeSteps = singleCircle;
+        auto ladderOnly = orbit;
+        ladderOnly.routeSteps = ladderCircle;
+        require(passes(singleOnly).size() == 2 && checkpointSteps(singleOnly).size() == 5,
+                "single-frame360 has two door visits plus three explicit turn checks");
+        require(passes(ladderOnly).size() == 3 && checkpointSteps(ladderOnly).size() == 5,
+                "ladder360 has lower-upper-lower visits plus two explicit turn checks");
+        const auto visits = passes(ladderOnly);
+        if (visits.size() == 3) {
+            const auto rotation =
+                QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(middleBar.yaw));
+            const float firstSign = direction.endsWith(QStringLiteral("ccw")) ? 1.f : -1.f;
+            require(visits[0].level == 0 && visits[1].level == 1 && visits[2].level == 0,
+                    "ladder full revolution retains lower-upper-lower cell order");
+            for (int i = 0; i < 3; ++i) {
+                const auto normal = ot::routeStepGeometry(ladderOnly, visits[i]).normal;
+                const auto expected =
+                    rotation.rotatedVector({0, 0, i == 1 ? -firstSign : firstSign});
+                require(QVector3D::dotProduct(normal, expected) > .99999f,
+                        "CW/CCW changes individual traversals, not physical frame yaw");
+            }
+        }
+        ot::TrackDocument projectCopy;
+        require(ot::fromJson(ot::toJson(orbit), &projectCopy, &error) &&
+                    projectCopy.routeSteps.size() == orbit.routeSteps.size() &&
+                    checkpointSteps(projectCopy).size() == 13,
+                "project retains arc samples and explicitly marked native turn controls");
+        ot::TrackDocument orbitOutput;
+        if (!roundtrip(path, orbit, &orbitOutput,
+                       "rotated multicolor360 plus gravity native export"))
+            continue;
+        require(passes(orbit).size() == 8 && nativeGates(orbitOutput).size() == 13,
+                "eight door visits and five explicit turn checks interleave without hidden "
+                "constraints");
+        require(orbitOutput.gates.size() == 3 && nativeBars(orbitOutput).size() == 32 &&
+                    countPrefab(nativeBars(orbitOutput), 2220) == 4 &&
+                    countPrefab(nativeBars(orbitOutput), 2224) == 7 &&
+                    countPrefab(nativeBars(orbitOutput), 2226) == 20 &&
+                    countPrefab(nativeBars(orbitOutput), 422) == 1,
+                "three colored physical assemblies emitted once plus one independent start grid");
+        requireNativeCheckpoints(orbit, orbitOutput);
+        requireRouteGeometry(orbit, orbitOutput);
+        require(checkpointSteps(orbitOutput).size() == 13 && passes(orbitOutput).size() == 8,
+                "native free turn checks do not masquerade as fabricated physical frames");
+        for (const auto &step : orbitOutput.routeSteps)
+            if (step.kind == QStringLiteral("guide"))
+                require(step.gateId.isEmpty() &&
+                            step.extra.value(QStringLiteral("raceCheckpoint")).toBool(),
+                        "unpaired native88 restores a free explicitly marked route checkpoint");
+        require(near(orbitOutput.takeoff.position.x(), -9.73) &&
+                    near(orbitOutput.takeoff.position.y(), 8.24) &&
+                    near(orbitOutput.takeoff.elevation, .23) &&
+                    near(orbitOutput.takeoff.yaw, -37.41, .1),
+                "orbit and gravity control geometry does not relocate independent takeoff");
+        const auto orbitCipher = readFile(path);
+        require(ot::exportVelocidrone(path, orbitOutput, &error) && readFile(path) == orbitCipher,
+                "interleaved physical/free controls preserve exact native body on roundtrip");
+        auto ordinaryGuideEdit = orbit;
+        int changedSamples = 0;
+        for (auto &step : ordinaryGuideEdit.routeSteps)
+            if (step.kind == QStringLiteral("guide") &&
+                !step.extra.value(QStringLiteral("raceCheckpoint")).toBool()) {
+                step.localGuide += QVector3D(.031f, 0, .027f);
+                ++changedSamples;
+            }
+        require(changedSamples > 0 && ot::exportVelocidrone(path, ordinaryGuideEdit, &error) &&
+                    readFile(path) == orbitCipher,
+                "editing project-only arc samples never creates or shifts native checkpoints");
+        auto explicitControlEdit = orbit;
+        for (auto &step : explicitControlEdit.routeSteps)
+            if (step.kind == QStringLiteral("guide") &&
+                step.extra.value(QStringLiteral("raceCheckpoint")).toBool()) {
+                step.localGuide += QVector3D(0, .03f, 0);
+                break;
+            }
+        require(ot::exportVelocidrone(path, explicitControlEdit, &error) &&
+                    readFile(path) != orbitCipher,
+                "editing an explicit turn control changes the exported race constraint");
+    }
+    // Free invisible native controls may have no corresponding logical solid.
+    auto freeChecks = course();
+    freeChecks.gates.clear();
+    freeChecks.routeStepsDefined = true;
+    ot::RouteStep freeControl;
+    freeControl.id = ot::newGateId();
+    freeControl.kind = QStringLiteral("guide");
+    freeControl.localGuide = {7.123f, 9.456f, -4.789f};
+    freeControl.extra = {{QStringLiteral("raceCheckpoint"), true},
+                         {QStringLiteral("curveTangent"), QJsonArray{.31, .70, -.66}},
+                         {QStringLiteral("checkpointUp"), QJsonArray{.1, 1, .2}},
+                         {QStringLiteral("checkpointWidth"), 1.1},
+                         {QStringLiteral("checkpointHeight"), .7}};
+    freeChecks.routeSteps = {freeControl};
+    ot::TrackDocument freeOutput;
+    if (roundtrip(path, freeChecks, &freeOutput,
+                  "all-free native control track without fabricated solids")) {
+        require(freeOutput.gates.isEmpty() && freeOutput.routeSteps.size() == 1 &&
+                    nativeBars(freeOutput).size() == 1,
+                "free native88 remains a route control; only takeoff is a physical barrier");
+        requireNativeCheckpoints(freeChecks, freeOutput);
+        const auto sourceGeometry = ot::routeStepGeometry(freeChecks, freeControl);
+        const auto importedGeometry = ot::routeStepGeometry(freeOutput, freeOutput.routeSteps[0]);
+        require(QVector3D::dotProduct(sourceGeometry.up, importedGeometry.up) > .99999f &&
+                    QVector3D::dotProduct(sourceGeometry.normal, importedGeometry.normal) > .99999f,
+                "native free non-square window preserves roll via explicit upward axis");
+        const auto freeCipher = readFile(path);
+        require(
+            ot::exportVelocidrone(path, freeOutput, &error) && readFile(path) == freeCipher,
+            "free native control preserves exact quaternion and body without duplicate barriers");
+    }
+    const auto validControlFile = readFile(path);
+    const auto rejectControlField = [&](const QString &key, const QJsonValue &value) {
+        auto invalidControl = freeChecks;
+        invalidControl.routeSteps[0].extra.insert(key, value);
+        require(!ot::exportVelocidrone(path, invalidControl, &error) && !error.isEmpty() &&
+                    readFile(path) == validControlFile,
+                "invalid explicit control metadata fails atomically before changing native file");
+    };
+    rejectControlField(QStringLiteral("raceCheckpoint"), QStringLiteral("true"));
+    rejectControlField(QStringLiteral("curveTangent"), QJsonArray{0, 0, 0});
+    rejectControlField(QStringLiteral("curveTangent"), QJsonArray{1, 2});
+    rejectControlField(QStringLiteral("curveTangent"), QJsonArray{1, "invalid", 0});
+    rejectControlField(QStringLiteral("checkpointWidth"), -.8);
+    rejectControlField(QStringLiteral("checkpointHeight"), QStringLiteral("0.8"));
+    rejectControlField(QStringLiteral("checkpointUp"), QJsonArray{.31, .70, -.66});
+    {
+        auto missingTangent = freeChecks;
+        missingTangent.routeSteps[0].extra.remove(QStringLiteral("curveTangent"));
+        require(!ot::exportVelocidrone(path, missingTangent, &error) &&
+                    readFile(path) == validControlFile,
+                "no automatic tangent is invented for a marked native turn control");
+    }
+    // Older projects carried a +X-normal checkpoint baseline. They must not
+    // reuse that raw rotation when their editor intent is forward+Z.
+    auto oldProject = course();
+    const auto oldFrame = ot::makeGate(QStringLiteral("start"));
+    oldProject.gates = {oldFrame};
+    oldProject.routeStepsDefined = true;
+    oldProject.routeSteps = {pass(oldFrame)};
+    oldProject.routeSteps[0].extra.insert(
+        QStringLiteral("velocidroneObject"),
+        QJsonObject{{QStringLiteral("prefab"), 88},
+                    {QStringLiteral("gate"), 0},
+                    {QStringLiteral("start"), true},
+                    {QStringLiteral("finish"), true},
+                    {QStringLiteral("trans"),
+                     QJsonObject{{QStringLiteral("pos"), QJsonArray{0, 12, 0}},
+                                 {QStringLiteral("rot"), QJsonArray{500, -500, -500, -500}},
+                                 {QStringLiteral("scale"), QJsonArray{100, 150, 150}}}}});
+    oldProject.routeSteps[0].extra.insert(
+        QStringLiteral("velocidroneStepGeometry"),
+        QJsonObject{{QStringLiteral("position"), QJsonArray{0, 1.6, 0}},
+                    {QStringLiteral("normal"), QJsonArray{0, 0, 1}},
+                    {QStringLiteral("right"), QJsonArray{1, 0, 0}},
+                    {QStringLiteral("up"), QJsonArray{0, 1, 0}},
+                    {QStringLiteral("width"), 2.9},
+                    {QStringLiteral("height"), 2.9}});
+    ot::TrackDocument migratedDirection;
+    if (roundtrip(path, oldProject, &migratedDirection,
+                  "old project native direction baseline migration"))
+        requireNativeCheckpoints(oldProject, migratedDirection);
+    auto nativeReverse = course();
+    nativeReverse.gates = {oldFrame};
+    nativeReverse.routeStepsDefined = true;
+    nativeReverse.routeSteps = {pass(oldFrame, QStringLiteral("front"), 0, 0, true)};
+    ot::TrackDocument preservedReverse;
+    if (roundtrip(path, nativeReverse, &preservedReverse,
+                  "native raw accepted direction preserved on import")) {
+        requireNativeCheckpoints(nativeReverse, preservedReverse);
+        const auto reverseCipher = readFile(path);
+        require(ot::exportVelocidrone(path, preservedReverse, &error) &&
+                    readFile(path) == reverseCipher,
+                "actual native import retains original direction instead of silently repairing "
+                "user intent");
     }
     auto adjacent = course();
     auto left = ot::makeGate(QStringLiteral("standard"));

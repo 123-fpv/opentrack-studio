@@ -319,7 +319,8 @@ QJsonArray vectorArray(const QVector3D &value) {
     return {value.x(), value.y(), value.z()};
 }
 QJsonObject geometryBaseline(const RouteStepGeometry &geometry) {
-    return {{QStringLiteral("position"), vectorArray(geometry.position)},
+    return {{QStringLiteral("basis"), QStringLiteral("accepted-minus-x-v2")},
+            {QStringLiteral("position"), vectorArray(geometry.position)},
             {QStringLiteral("normal"), vectorArray(geometry.normal)},
             {QStringLiteral("right"), vectorArray(geometry.right)},
             {QStringLiteral("up"), vectorArray(geometry.up)},
@@ -332,17 +333,17 @@ RouteStepGeometry stepGeometry(const Gate &gate, const RouteStep &step) {
     return routeStepGeometry(one, step);
 }
 QQuaternion checkpointRotation(const RouteStepGeometry &geometry) {
-    // Installed race prefab88: X normal, Y right, Z up. This is not the
-    // differently oriented editor-helper mesh used by third-party viewers.
+    // Native CheckPoint accepts velocity along resetPosition-originPosition.
+    // The installed88 markers are (-1,0,.3)-(0,0,.3): accepted local-X.
+    // Negating both X/Y keeps the rotation right-handed while Z remains up.
     QMatrix3x3 matrix;
     for (int row = 0; row < 3; ++row) {
-        matrix(row, 0) = geometry.normal[row];
-        matrix(row, 1) = geometry.right[row];
+        matrix(row, 0) = -geometry.normal[row];
+        matrix(row, 1) = -geometry.right[row];
         matrix(row, 2) = geometry.up[row];
     }
     auto rotation = QQuaternion::fromRotationMatrix(matrix).normalized();
-    // q and -q represent the same rotation. Prefer the canonical sign used by
-    // the independently captured front-facing native checkpoints.
+    // q and -q represent the same rotation. Use a stable authored sign.
     if (rotation.scalar() < 0)
         rotation = -rotation;
     return rotation;
@@ -370,8 +371,8 @@ RouteStepGeometry invisibleGeometry(const QJsonObject &object) {
         scale[0].toDouble() <= 0 || scale[1].toDouble() <= 0 || scale[2].toDouble() <= 0)
         return geometry;
     const auto q = quaternion(rotation);
-    geometry.normal = q.rotatedVector({1, 0, 0});
-    geometry.right = q.rotatedVector({0, 1, 0});
+    geometry.normal = q.rotatedVector({-1, 0, 0});
+    geometry.right = q.rotatedVector({0, -1, 0});
     geometry.up = q.rotatedVector({0, 0, 1});
     geometry.position =
         QVector3D(static_cast<float>(position[0].toDouble() / 100),
@@ -397,6 +398,64 @@ bool samePortal(const RouteStepGeometry &a, const RouteStepGeometry &b) {
            QVector3D::dotProduct(a.normal, b.normal) > .99998f &&
            QVector3D::dotProduct(a.right, b.right) > .99998f &&
            QVector3D::dotProduct(a.up, b.up) > .99998f;
+}
+bool finiteGeometry(const RouteStepGeometry &geometry) {
+    if (!geometry.valid || !std::isfinite(geometry.openingWidth) ||
+        !std::isfinite(geometry.openingHeight) || geometry.openingWidth < .02 ||
+        geometry.openingHeight < .02 || geometry.openingWidth > 1000 ||
+        geometry.openingHeight > 1000)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(geometry.position[axis]) ||
+            std::abs(geometry.position[axis]) > 1000000 || !std::isfinite(geometry.normal[axis]) ||
+            !std::isfinite(geometry.right[axis]) || !std::isfinite(geometry.up[axis]))
+            return false;
+    return std::abs(geometry.normal.lengthSquared() - 1) < .002f &&
+           std::abs(geometry.right.lengthSquared() - 1) < .002f &&
+           std::abs(geometry.up.lengthSquared() - 1) < .002f &&
+           QVector3D::dotProduct(QVector3D::crossProduct(geometry.right, geometry.up),
+                                 geometry.normal) > .999f;
+}
+bool auxiliaryCheckpoint(const RouteStep &step, bool *enabled, QString *error) {
+    const auto marker = step.extra.value(QStringLiteral("raceCheckpoint"));
+    *enabled = false;
+    if (marker.isUndefined())
+        return true;
+    if (!marker.isBool())
+        return fail(error, QStringLiteral("翻绕检查点标记必须为布尔值。"));
+    if (!marker.toBool())
+        return true;
+    QJsonArray tangent;
+    if (!numericArray(step.extra.value(QStringLiteral("curveTangent")), 3, &tangent, 1000000))
+        return fail(error, QStringLiteral("翻绕检查点需要三个有限数字组成的明确切向量。"));
+    double length = 0;
+    for (const auto &value : tangent)
+        length += value.toDouble() * value.toDouble();
+    if (length < 1e-12)
+        return fail(error, QStringLiteral("翻绕检查点的切向量不能为零。"));
+    for (const auto &key :
+         {QStringLiteral("checkpointWidth"), QStringLiteral("checkpointHeight")}) {
+        const auto value = step.extra.value(key);
+        if (!value.isUndefined() && (!value.isDouble() || !std::isfinite(value.toDouble()) ||
+                                     value.toDouble() < .1 || value.toDouble() > 100))
+            return fail(error, QStringLiteral("翻绕检查点的窗口尺寸无效。"));
+    }
+    const auto up = step.extra.value(QStringLiteral("checkpointUp"));
+    if (!up.isUndefined()) {
+        QJsonArray vector;
+        if (!numericArray(up, 3, &vector, 1000000))
+            return fail(error, QStringLiteral("翻绕检查点的向上轴无效。"));
+        const QVector3D a(static_cast<float>(tangent[0].toDouble()),
+                          static_cast<float>(tangent[1].toDouble()),
+                          static_cast<float>(tangent[2].toDouble()));
+        const QVector3D b(static_cast<float>(vector[0].toDouble()),
+                          static_cast<float>(vector[1].toDouble()),
+                          static_cast<float>(vector[2].toDouble()));
+        if (QVector3D::crossProduct(a, b).lengthSquared() < 1e-12f)
+            return fail(error, QStringLiteral("翻绕检查点的向上轴不能与切向量平行。"));
+    }
+    *enabled = true;
+    return true;
 }
 bool matchingStep(const Gate &gate, const RouteStepGeometry &portal, RouteStep *result) {
     const auto metrics = gateFrameMetrics(gate);
@@ -738,28 +797,26 @@ void restorePhysicalRoute(TrackDocument *document, const QJsonArray &barriers) {
             }
         }
         if (!matched) {
-            auto fallback = rawGate;
             if (portal.valid) {
-                fallback.position = {portal.position.x(), portal.position.z()};
-                fallback.elevation = portal.position.y();
-                fallback.width = portal.openingWidth;
-                fallback.height = portal.openingHeight;
-                fallback.yaw =
-                    std::atan2(portal.normal.x(), portal.normal.z()) * 180 / 3.14159265358979323846;
-                fallback.extra.insert(NativeBaseline, baseline(fallback));
+                // Native88 has no visible solid. An unmatched trigger is a
+                // free ordered control, not a fabricated physical door frame.
+                step.kind = QStringLiteral("guide");
+                step.localGuide = portal.position;
+                step.label = QStringLiteral("原生独立检查点");
+                step.extra.insert(QStringLiteral("raceCheckpoint"), true);
+                step.extra.insert(QStringLiteral("checkpointWidth"), portal.openingWidth);
+                step.extra.insert(QStringLiteral("checkpointHeight"), portal.openingHeight);
+                step.extra.insert(QStringLiteral("curveTangent"), vectorArray(portal.normal));
+                step.extra.insert(QStringLiteral("checkpointUp"), vectorArray(portal.up));
+            } else {
+                document->gates.append(rawGate);
+                step.gateId = rawGate.id;
             }
-            document->gates.append(fallback);
-            step.gateId = fallback.id;
         }
         step.id = newGateId();
         step.extra.insert(NativeObject, raw);
         step.extra.insert(NativeArrayIndex, rawGate.extra.value(NativeArrayIndex));
-        for (const auto &physical : document->gates)
-            if (physical.id == step.gateId) {
-                step.extra.insert(NativeStepGeometry,
-                                  geometryBaseline(stepGeometry(physical, step)));
-                break;
-            }
+        step.extra.insert(NativeStepGeometry, geometryBaseline(routeStepGeometry(*document, step)));
         document->routeSteps.append(step);
     }
     QJsonArray indices;
@@ -920,8 +977,8 @@ NativeBlockColor nearestNativeBlockColor(const QColor &color) {
 bool exportVelocidrone(const QString &path, const TrackDocument &document, QString *error) {
     if (error)
         error->clear();
-    if (document.gates.isEmpty() || document.gates.size() > MaxGates)
-        return fail(error, QStringLiteral("原生赛道需要 1 至 %1 个门序组件。 ").arg(MaxGates));
+    if (document.gates.size() > MaxGates)
+        return fail(error, QStringLiteral("实体组件不能超过 %1 个。").arg(MaxGates));
     const int scene = sceneryId(document);
     if (scene <= 0)
         return fail(error, QStringLiteral("此场景尚无经过核对的 VelociDrone 编号，请选择 Football "
@@ -943,7 +1000,7 @@ bool exportVelocidrone(const QString &path, const TrackDocument &document, QStri
         physical.insert(gate.id, &gate);
     }
     const auto steps = effectiveRouteSteps(document);
-    QVector<RouteStep> passes;
+    QVector<RouteStep> orderedChecks;
     QHash<QString, int> uses;
     QSet<QString> ids;
     for (const auto &step : steps) {
@@ -951,20 +1008,29 @@ bool exportVelocidrone(const QString &path, const TrackDocument &document, QStri
             return fail(error, QStringLiteral("飞行步骤的ID为空或重复。"));
         ids.insert(step.id);
         if (step.kind == QStringLiteral("guide")) {
-            if (!routeStepGeometry(document, step).valid)
+            bool raceCheckpoint = false;
+            if (!auxiliaryCheckpoint(step, &raceCheckpoint, error))
+                return false;
+            const auto geometry = routeStepGeometry(document, step);
+            if (!geometry.valid)
                 return fail(error, QStringLiteral("飞行引导点引用或坐标无效。"));
+            if (raceCheckpoint) {
+                if (!finiteGeometry(geometry))
+                    return fail(error, QStringLiteral("翻绕检查点的世界位置、方向或窗口无效。"));
+                orderedChecks.append(step);
+            }
             continue;
         }
         if (step.kind != QStringLiteral("pass") || !physical.contains(step.gateId) ||
-            !stepGeometry(*physical.value(step.gateId), step).valid)
-            return fail(error, QStringLiteral("穿越步骤引用、面或窗口索引无效。"));
-        passes.append(step);
+            !finiteGeometry(stepGeometry(*physical.value(step.gateId), step)))
+            return fail(error, QStringLiteral("穿越步骤引用、面、位置或窗口索引无效。"));
+        orderedChecks.append(step);
         ++uses[step.gateId];
     }
-    if (passes.isEmpty() || passes.size() > MaxGates)
-        return fail(
-            error,
-            QStringLiteral("原生赛道需要1至%1个实际穿越步骤；引导点不计入门序。").arg(MaxGates));
+    if (orderedChecks.isEmpty() || orderedChecks.size() > MaxGates)
+        return fail(error,
+                    QStringLiteral("原生赛道需要1至%1个穿门或翻绕检查点；普通引导点不计入门序。")
+                        .arg(MaxGates));
     // Legacy native gate prefabs combine geometry and checkpoint in one object.
     // Until their physical and trigger geometry is calibrated, rerouting these
     // would duplicate solids or invent an unverified barrier representation.
@@ -984,25 +1050,28 @@ bool exportVelocidrone(const QString &path, const TrackDocument &document, QStri
         return originalGates[a].toObject().value(QStringLiteral("gate")).toInt(a) <
                originalGates[b].toObject().value(QStringLiteral("gate")).toInt(b);
     });
-    bool preserveFlags = passes.size() == originalGates.size();
+    bool preserveFlags = orderedChecks.size() == originalGates.size();
     if (preserveFlags)
-        for (qsizetype i = 0; i < passes.size(); ++i) {
-            const int sourceIndex = passes[i].extra.value(NativeArrayIndex).toInt(-1);
-            if (sourceIndex != originalOrder[i] || passes[i].extra.value(NativeObject).toObject() !=
-                                                       originalGates[sourceIndex].toObject()) {
+        for (qsizetype i = 0; i < orderedChecks.size(); ++i) {
+            const int sourceIndex = orderedChecks[i].extra.value(NativeArrayIndex).toInt(-1);
+            if (sourceIndex != originalOrder[i] ||
+                orderedChecks[i].extra.value(NativeObject).toObject() !=
+                    originalGates[sourceIndex].toObject()) {
                 preserveFlags = false;
                 break;
             }
         }
     QJsonArray gates;
-    for (qsizetype i = 0; i < passes.size(); ++i) {
-        const auto &step = passes[i];
-        const auto &gate = *physical.value(step.gateId);
-        const auto geometry = stepGeometry(gate, step);
+    for (qsizetype i = 0; i < orderedChecks.size(); ++i) {
+        const auto &step = orderedChecks[i];
+        const Gate *gate = physical.value(step.gateId, nullptr);
+        const auto geometry = gate ? stepGeometry(*gate, step) : routeStepGeometry(document, step);
+        const bool auxiliary = step.kind == QStringLiteral("guide");
         QJsonObject object = step.extra.value(NativeObject).toObject();
-        if (compositeFrame(gate) || gate.type == QStringLiteral("pillar")) {
+        if (auxiliary ||
+            (gate && (compositeFrame(*gate) || gate->type == QStringLiteral("pillar")))) {
             if (geometry.openingWidth < .02 || geometry.openingHeight < .02 ||
-                (compositeFrame(gate) && gateFrameMetrics(gate).beamThickness < .01))
+                (gate && compositeFrame(*gate) && gateFrameMetrics(*gate).beamThickness < .01))
                 return fail(error, QStringLiteral("穿越窗口或梁截面过小。"));
             if (object.value(QStringLiteral("prefab")).toInt() != 88 ||
                 step.extra.value(NativeStepGeometry).toObject() != geometryBaseline(geometry))
@@ -1013,7 +1082,7 @@ bool exportVelocidrone(const QString &path, const TrackDocument &document, QStri
                 step.level != 0)
                 return fail(error, QStringLiteral(
                                        "旧原生模型的任意面/反向穿越尚未校准，请先使用方梁结构。"));
-            if (!makeNativeObject(gate, static_cast<int>(i), i == 0, &object, error))
+            if (!makeNativeObject(*gate, static_cast<int>(i), i == 0, &object, error))
                 return false;
         }
         if (!validNativeTransform(object))
@@ -1031,7 +1100,7 @@ bool exportVelocidrone(const QString &path, const TrackDocument &document, QStri
     }
     if (preserveFlags) {
         const auto ordered = gates;
-        for (qsizetype i = 0; i < passes.size(); ++i)
+        for (qsizetype i = 0; i < orderedChecks.size(); ++i)
             gates[originalOrder[i]] = ordered[i];
     }
     layout.insert(QStringLiteral("gates"), gates);

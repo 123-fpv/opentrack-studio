@@ -2,8 +2,12 @@
 #include "document.h"
 
 #include <QApplication>
+#include <QEventLoop>
+#include <QGraphicsPathItem>
+#include <QGraphicsScene>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QTimer>
 #include <cmath>
 #include <iostream>
 
@@ -38,6 +42,11 @@ QImage symbol(const QString &type, bool selected = false, const QColor &color = 
     ot::paintGateSymbol(&painter, QRectF(0, 0, image.width(), image.height()), type, selected,
                         color);
     return image;
+}
+void advanceEvents(int milliseconds) {
+    QEventLoop loop;
+    QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+    loop.exec();
 }
 } // namespace
 
@@ -110,6 +119,55 @@ int main(int argc, char **argv) {
     canvas.selectGate(gate.id);
     canvas.selectGate(gate.id);
     require(events == 0, "selection bridge is a no-op for an already selected id");
+    ot::TrackDocument legacyGap;
+    legacyGap.closedLoop = false;
+    for (const double x : {-12., -6., 0., 6., 12.}) {
+        auto item = ot::makeGate();
+        item.position = {x, 0};
+        item.yaw = 90;
+        if (x == 0)
+            item.elevation = .1;
+        legacyGap.gates.append(item);
+    }
+    const auto safeCurve = ot::routeCurve(legacyGap);
+    require(!safeCurve.breaks.isEmpty(),
+            "legacy fixture has an impossible low portal and a safe gap");
+    canvas.setDocument(&legacyGap);
+    canvas.fitTrack();
+    int strokes = 0;
+    for (auto *item : canvas.scene()->items())
+        if (const auto *path = dynamic_cast<QGraphicsPathItem *>(item))
+            for (int i = 0; i < path->path().elementCount(); ++i)
+                strokes += path->path().elementAt(i).isMoveTo();
+    require(
+        strokes == safeCurve.breaks.size() + 1,
+        "actual 2D scene renders separate constrained strokes even without explicit route steps");
+
+    ot::TrackDocument paused;
+    paused.closedLoop = false;
+    paused.routeStepsDefined = true;
+    for (const auto &point :
+         {QVector3D(-2, 1.6f, 0), QVector3D(-1.6f, 1.6f, 0), QVector3D(0, .05f, 0),
+          QVector3D(2, 1.6f, 0), QVector3D(3, 1.6f, 0)}) {
+        ot::RouteStep step;
+        step.id = ot::newGateId();
+        step.kind = "guide";
+        step.localGuide = point;
+        paused.routeSteps.append(step);
+    }
+    require(!ot::routeCurve(paused).breaks.isEmpty(), "preview pause fixture contains a gap");
+    canvas.setDocument(&paused);
+    canvas.fitTrack();
+    canvas.setPreviewSpeed(233);
+    canvas.setPreview(true);
+    advanceEvents(120);
+    const auto stopped = canvas.exportImage();
+    for (const int milliseconds : {23, 31, 37}) {
+        advanceEvents(milliseconds);
+        require(canvas.exportImage() == stopped,
+                "2D preview stays parked at the first gap instead of restarting across it");
+    }
+    canvas.setPreview(false);
     if (!failures)
         std::cout << "PASS: 2D two-step selection, halo, drag threshold, snapped movement and undo "
                      "gestures; distinct compound glyphs and color retention.\n";

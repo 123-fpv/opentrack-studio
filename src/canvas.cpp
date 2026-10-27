@@ -265,13 +265,25 @@ TrackCanvas::TrackCanvas(QWidget *parent) : QGraphicsView(parent) {
     timer_.setInterval(16);
     connect(&timer_, &QTimer::timeout, this, [this] {
         const double dt = std::min(.1, elapsed_.restart() / 1000.);
-        if (pathLength_ < .01 || !drone_)
+        if (pathLength_ < .01 || !drone_) {
+            if (previewHasGap_) {
+                if (drone_)
+                    drone_->setPos(previewPath_.currentPosition());
+                timer_.stop();
+            }
             return;
+        }
         flightDistance_ += dt * speedKph_ / 3.6;
+        if (previewHasGap_ && flightDistance_ >= pathLength_) {
+            flightDistance_ = pathLength_;
+            drone_->setPos(previewPath_.pointAtPercent(1));
+            timer_.stop();
+            return;
+        }
         if (doc_ && !doc_->closedLoop && flightDistance_ >= pathLength_)
             flightDistance_ = 0;
-        const auto pos =
-            path_.pointAtPercent(path_.percentAtLength(std::fmod(flightDistance_, pathLength_)));
+        const auto pos = previewPath_.pointAtPercent(
+            previewPath_.percentAtLength(std::fmod(flightDistance_, pathLength_)));
         drone_->setPos(pos);
     });
 }
@@ -319,23 +331,47 @@ void TrackCanvas::rebuild() {
 void TrackCanvas::refreshRoute() {
     if (!doc_ || !route_) {
         path_ = QPainterPath();
+        previewPath_ = QPainterPath();
         pathLength_ = 0;
+        previewHasGap_ = false;
         return;
     }
-    path_ = routePath(*doc_);
-    pathLength_ = path_.length();
+    const auto curve = routeCurve(*doc_);
+    path_ = QPainterPath();
+    for (qsizetype i = 0; i < curve.points.size(); ++i) {
+        const QPointF point(curve.points[i].x(), curve.points[i].z());
+        if (i == 0 || curve.breaks.contains(static_cast<int>(i)))
+            path_.moveTo(point);
+        else
+            path_.lineTo(point);
+    }
+    previewHasGap_ = !curve.breaks.isEmpty();
+    previewPath_ = path_;
+    if (!curve.breaks.isEmpty()) {
+        previewPath_ = QPainterPath();
+        const int end = curve.breaks.first();
+        for (int i = 0; i < end && i < curve.points.size(); ++i) {
+            const QPointF point(curve.points[i].x(), curve.points[i].z());
+            if (i == 0)
+                previewPath_.moveTo(point);
+            else
+                previewPath_.lineTo(point);
+        }
+    }
+    pathLength_ = previewPath_.length();
     route_->setPath(path_);
     route_->setVisible(routeVisible_);
 }
 void TrackCanvas::fitTrack() {
     if (!doc_)
         return;
+    refreshRoute();
     QRectF r;
     for (const auto &g : doc_->gates)
         r = r.united(QRectF(g.position - QPointF(3, 3), QSizeF(6, 6)));
     if (doc_->takeoff.enabled)
         r = r.united(QRectF(doc_->takeoff.position - QPointF(2, 2), QSizeF(4, 4)));
-    r = r.united(routePath(*doc_).boundingRect());
+    r = r.united(path_.boundingRect());
     if (doc_->gates.isEmpty() && doc_->showBackground && !doc_->background.isNull())
         r = r.united(
             QRectF(doc_->backgroundOrigin, QSizeF(doc_->background.size()) * doc_->metersPerPixel));
@@ -425,9 +461,11 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
         }
         if (routeVisible_) {
             QHash<QString, int> overlapping;
-            int number = 0;
+            int number = 0, turn = 0;
             for (const auto &step : effectiveRouteSteps(*doc_)) {
-                if (step.kind != "pass")
+                const bool turnCheck =
+                    step.kind == "guide" && step.extra.value("raceCheckpoint").toBool();
+                if (step.kind != "pass" && !turnCheck)
                     continue;
                 const auto geometry = routeStepGeometry(*doc_, step);
                 if (!geometry.valid)
@@ -443,7 +481,7 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
                 p->drawRoundedRect(QRectF(badge.x(), badge.y(), 28, 18), 4, 4);
                 p->setPen(Qt::white);
                 p->drawText(QRectF(badge.x(), badge.y(), 28, 18), Qt::AlignCenter,
-                            QString::number(++number));
+                            turnCheck ? QString("T%1").arg(++turn) : QString::number(++number));
             }
         }
     }

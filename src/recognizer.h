@@ -10,6 +10,9 @@ namespace ot {
 // racing line use obstacle shapes and the drawn route graph, including compound
 // and edge-on gates. Original line samples inside symbols determine repeated
 // aperture passes; occlusion continuation and 3D turn depth remain estimates.
+// Side-view crossbar wraps retain measured winding/source curvature and anchored
+// arc tangents. A frontal projected loop does not establish a 3D orbit direction;
+// it is retained as evidence requiring a manual choice, never a hidden full turn.
 // Blue-icon plans retain the simple detector below. Heights and unreadable or
 // ambiguous passages require human review; no missing cells are filled by type.
 // arbitrary photographs are outside this local recognizer's scope.

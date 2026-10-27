@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QJsonArray>
+#include <QQuaternion>
 #include <QTemporaryDir>
 #include <cmath>
 #include <iostream>
@@ -34,8 +35,9 @@ ot::RouteStep pass(const ot::Gate &gate, int column = 0, int level = 0,
     return step;
 }
 
-bool intersectsBeam(QVector3D a, QVector3D b, const ot::GateBeam &beam) {
-    const auto low = beam.center - beam.size / 2, high = beam.center + beam.size / 2;
+bool intersectsBeam(QVector3D a, QVector3D b, const ot::GateBeam &beam, float clearance = 0) {
+    const auto half = beam.size / 2 + QVector3D(clearance, clearance, clearance);
+    const auto low = beam.center - half, high = beam.center + half;
     float begin = 0, end = 1;
     for (int axis = 0; axis < 3; ++axis) {
         const float delta = b[axis] - a[axis];
@@ -52,6 +54,53 @@ bool intersectsBeam(QVector3D a, QVector3D b, const ot::GateBeam &beam) {
         }
     }
     return true;
+}
+
+void denseClearance(const ot::TrackDocument &document, const ot::RouteCurveResult &curve) {
+    for (const auto &point : curve.points)
+        require(std::isfinite(point.x()) && std::isfinite(point.y()) && std::isfinite(point.z()) &&
+                    point.y() >= ot::routePreviewClearance() - 1e-4,
+                "sampled curve remains finite and above the drone-clearance floor");
+    for (const auto &gate : document.gates) {
+        const auto inverse =
+            QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate.yaw)).conjugated();
+        const QVector3D origin(static_cast<float>(gate.position.x()),
+                               static_cast<float>(gate.elevation),
+                               static_cast<float>(gate.position.y()));
+        auto beams = ot::gateFrameBeams(gate);
+        if (gate.type == QStringLiteral("pillar"))
+            beams = {{{0, 0, 0},
+                      {static_cast<float>(gate.width), static_cast<float>(gate.height),
+                       static_cast<float>(gate.width)}}};
+        for (qsizetype i = 1; i < curve.points.size(); ++i) {
+            if (curve.breaks.contains(static_cast<int>(i)))
+                continue;
+            for (const auto &beam : beams)
+                require(!intersectsBeam(inverse.rotatedVector(curve.points[i - 1] - origin),
+                                        inverse.rotatedVector(curve.points[i] - origin), beam,
+                                        static_cast<float>(ot::routePreviewClearance())),
+                        "every sampled segment clears the actual rotated stock by drone radius");
+        }
+    }
+}
+
+double barWinding(const ot::Gate &gate, const QVector<QVector3D> &points, double centerY) {
+    const auto inverse =
+        QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate.yaw)).conjugated();
+    const QVector3D origin(static_cast<float>(gate.position.x()),
+                           static_cast<float>(gate.elevation),
+                           static_cast<float>(gate.position.y()));
+    double previous = 0, winding = 0;
+    bool first = true;
+    for (const auto &point : points) {
+        const auto local = inverse.rotatedVector(point - origin);
+        const double angle = std::atan2(local.y() - centerY, local.z());
+        if (!first)
+            winding += std::remainder(angle - previous, 2 * 3.14159265358979323846);
+        first = false;
+        previous = angle;
+    }
+    return winding;
 }
 
 void clearRoute(const ot::TrackDocument &document) {
@@ -193,6 +242,141 @@ int main(int argc, char **argv) {
     }
     require(ot::gateManeuverSteps(ladder, QStringLiteral("gravity-dive")).isEmpty(),
             "a planar ladder cannot silently become a cube gravity maneuver");
+
+    for (const auto &shape : {QStringLiteral("standard"), QStringLiteral("ladder")})
+        for (const auto &pattern :
+             {QStringLiteral("orbit-bar-cw"), QStringLiteral("orbit-bar-ccw")})
+            for (const double yaw : {0.0, 37.0, 135.0}) {
+                ot::TrackDocument orbit;
+                orbit.closedLoop = false;
+                orbit.routeStepsDefined = true;
+                auto frame = ot::makeGate(shape);
+                frame.position = {-4, 6};
+                frame.yaw = yaw;
+                orbit.gates = {frame};
+                orbit.routeSteps = ot::gateManeuverSteps(frame, pattern);
+                const auto curve = ot::routeCurve(orbit);
+                require(curve.clearanceSatisfied && curve.smooth && curve.breaks.isEmpty() &&
+                            curve.points.size() > 100,
+                        "full horizontal-bar orbit is a dense smooth clearance-preserving curve");
+                const double winding = barWinding(
+                    frame, curve.points, shape == QStringLiteral("ladder") ? 0 : frame.height / 2);
+                require(std::abs(winding - (pattern.endsWith("ccw") ? 1 : -1) * 2 *
+                                               3.14159265358979323846) < .02,
+                        "CW and CCW complete opposite full turns in the documented local+X view");
+                require(close(curve.points.first(), curve.points.last()),
+                        "full orbit closes at the exact aperture without a diagonal shortcut");
+                denseClearance(orbit, curve);
+                int passes = 0, checks = 0;
+                qsizetype previous = -1;
+                for (const auto &step : orbit.routeSteps) {
+                    passes += step.kind == QStringLiteral("pass");
+                    checks += step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false);
+                    const auto geometry = ot::routeStepGeometry(orbit, step);
+                    qsizetype index = -1;
+                    for (qsizetype i = previous + 1; i < curve.points.size(); ++i)
+                        if (close(curve.points[i], geometry.position)) {
+                            index = i;
+                            break;
+                        }
+                    require(index >= 0,
+                            "dense orbit retains all ordered portal and arc control anchors");
+                    if (step.kind == QStringLiteral("pass") && index >= 0) {
+                        const auto before =
+                            curve.points[index > 0 ? index - 1 : curve.points.size() - 2];
+                        const auto after =
+                            curve.points[index + 1 < curve.points.size() ? index + 1 : 1];
+                        require(QVector3D::dotProduct((geometry.position - before).normalized(),
+                                                      geometry.normal) > .995 &&
+                                    QVector3D::dotProduct((after - geometry.position).normalized(),
+                                                          geometry.normal) > .995,
+                                "both sides of each exact orbit aperture align with its traversal "
+                                "normal");
+                    }
+                    if (step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false))
+                        require(geometry.valid && geometry.normal.lengthSquared() > .99f &&
+                                    close(geometry.openingWidth, .8) &&
+                                    close(geometry.openingHeight, .8),
+                                "explicit auxiliary turn checks have valid tangent planes and "
+                                "small openings");
+                    previous = index;
+                }
+                require(passes == (shape == QStringLiteral("ladder") ? 3 : 2) &&
+                            checks == (shape == QStringLiteral("ladder") ? 2 : 3),
+                        "full turn uses real aperture visits plus explicit side controls, without "
+                        "fake upper gates");
+                auto backgroundOnly = orbit;
+                backgroundOnly.background = QImage(31, 17, QImage::Format_RGB32);
+                backgroundOnly.background.fill(Qt::green);
+                backgroundOnly.showBackground = true;
+                backgroundOnly.name = QStringLiteral("unrelated editor metadata");
+                require(
+                    ot::routeCurve(backgroundOnly).points == curve.points,
+                    "route geometry is independent of background pixels and unrelated metadata");
+            }
+
+    for (const auto &shape : {QStringLiteral("ladder"), QStringLiteral("triple"),
+                              QStringLiteral("cube"), QStringLiteral("cube-stack")}) {
+        ot::TrackDocument rounded;
+        rounded.closedLoop = false;
+        rounded.routeStepsDefined = true;
+        rounded.gates = {ot::makeGate(shape)};
+        const QString pattern = shape == "ladder"   ? "lower-upper"
+                                : shape == "triple" ? "left-right"
+                                                    : "gravity-climb";
+        rounded.routeSteps = ot::gateManeuverSteps(rounded.gates[0], pattern);
+        const auto curve = ot::routeCurve(rounded);
+        require(curve.clearanceSatisfied && curve.smooth && curve.breaks.isEmpty() &&
+                    curve.points.size() > 50,
+                "half-wrap, serpent and gravity maneuvers are rounded with no clearance fallback");
+        denseClearance(rounded, curve);
+    }
+
+    ot::TrackDocument blocked;
+    blocked.closedLoop = false;
+    blocked.routeStepsDefined = true;
+    blocked.gates = {ot::makeGate(QStringLiteral("pillar"))};
+    auto freeA = guide, freeB = guide;
+    freeA.id = ot::newGateId();
+    freeB.id = ot::newGateId();
+    freeA.gateId.clear();
+    freeB.gateId.clear();
+    freeA.localGuide = {-3, 1.6f, -1};
+    freeB.localGuide = {3, 1.6f, 1};
+    blocked.routeSteps = {freeA, freeB};
+    const auto detoured = ot::routeCurve(blocked);
+    require(
+        detoured.clearanceSatisfied && detoured.breaks.isEmpty() && !detoured.smooth &&
+            !detoured.warnings.isEmpty() && detoured.points.size() > 2,
+        "blocked arbitrary join gets a bounded safe detour with an honest smoothness diagnostic");
+    denseClearance(blocked, detoured);
+    blocked.gates.clear();
+    blocked.routeSteps.clear();
+    for (const auto &point :
+         {QVector3D(-3, 1.6f, -1), QVector3D(-1, 1.6f, -1), QVector3D(0, .05f, 0),
+          QVector3D(1, 1.6f, -1), QVector3D(3, 1.6f, -1)}) {
+        auto step = freeA;
+        step.id = ot::newGateId();
+        step.localGuide = point;
+        blocked.routeSteps.append(step);
+    }
+    const auto segmented = ot::routeCurve(blocked);
+    require(!segmented.clearanceSatisfied && !segmented.breaks.isEmpty() &&
+                !segmented.points.isEmpty(),
+            "impossible ground anchor preserves safe strokes with explicit gaps instead of a false "
+            "bridge");
+    denseClearance(blocked, segmented);
+    require(ot::routePolyline(blocked).size() == segmented.breaks.first(),
+            "compatibility polyline stops before the first gap");
+
+    auto invalidHint = freeA;
+    invalidHint.extra.insert(QStringLiteral("curveMode"), QStringLiteral("arc-v1"));
+    invalidHint.extra.insert(QStringLiteral("curveTangent"), QJsonArray{1e100, 0, 0});
+    blocked.routeSteps = {invalidHint, freeB};
+    const auto ignoredHint = ot::routeCurve(blocked);
+    require(!ignoredHint.warnings.isEmpty() && ignoredHint.points.size() < 200000,
+            "crafted huge tangent hints are ignored safely without unbounded sampling");
+    denseClearance(blocked, ignoredHint);
 
     ot::TrackDocument vertical;
     vertical.closedLoop = false;

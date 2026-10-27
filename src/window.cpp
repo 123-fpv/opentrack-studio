@@ -104,6 +104,109 @@ QDoubleSpinBox *number(double min, double max, double step = 0.1) {
     s->setKeyboardTracking(false);
     return s;
 }
+class ManeuverPreview final : public QWidget {
+    QVector<QVector3D> points_;
+    QVector<int> breaks_;
+    QVector<QRectF> bars_;
+    bool topView_ = false;
+
+  public:
+    explicit ManeuverPreview(QWidget *parent = nullptr) : QWidget(parent) {
+        setMinimumHeight(116);
+        setMaximumHeight(136);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setToolTip("动作示意图：箭头表示飞行方向；横杆侧视中的顺、逆时针以此视角为准。");
+    }
+    void setManeuver(const Gate *source, const QString &pattern) {
+        points_.clear();
+        breaks_.clear();
+        bars_.clear();
+        topView_ = pattern == "left-right" || pattern == "right-left";
+        if (source) {
+            Gate gate = *source;
+            gate.position = {};
+            gate.yaw = 0;
+            TrackDocument preview;
+            preview.closedLoop = false;
+            preview.routeStepsDefined = true;
+            preview.gates = {gate};
+            preview.routeSteps = gateManeuverSteps(gate, pattern);
+            const auto curve = routeCurve(preview);
+            points_ = curve.points;
+            breaks_ = curve.breaks;
+            for (const auto &beam : gateFrameBeams(gate)) {
+                if (topView_) {
+                    if (beam.size.y() > beam.size.x() && beam.size.y() > beam.size.z())
+                        bars_.append(QRectF(beam.center.x() - beam.size.x() / 2,
+                                            beam.center.z() - beam.size.z() / 2, beam.size.x(),
+                                            beam.size.z()));
+                } else if (std::abs(beam.center.x()) <= beam.size.x() / 2) {
+                    bars_.append(QRectF(beam.center.z() - beam.size.z() / 2,
+                                        -gate.elevation - beam.center.y() - beam.size.y() / 2,
+                                        beam.size.z(), beam.size.y()));
+                }
+            }
+        }
+        setVisible(source && pattern != "single");
+        update();
+    }
+    void paintEvent(QPaintEvent *) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QColor("#d3d3d3"));
+        painter.setBrush(QColor("#fafafa"));
+        painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 4, 4);
+        const auto project = [this](const QVector3D &point) {
+            return topView_ ? QPointF(point.x(), point.z()) : QPointF(point.z(), -point.y());
+        };
+        QRectF bounds;
+        bool initialized = false;
+        for (const auto &point : points_) {
+            const QRectF one(project(point) - QPointF(.02, .02), QSizeF(.04, .04));
+            bounds = initialized ? bounds.united(one) : one;
+            initialized = true;
+        }
+        for (const auto &bar : bars_) {
+            bounds = initialized ? bounds.united(bar) : bar;
+            initialized = true;
+        }
+        if (!initialized)
+            return;
+        bounds = bounds.adjusted(-.45, -.4, .45, .4);
+        const QRectF area = QRectF(rect()).adjusted(14, 24, -14, -12);
+        const double scale = std::min(area.width() / std::max(.1, bounds.width()),
+                                      area.height() / std::max(.1, bounds.height()));
+        const auto pixel = [&](const QPointF &point) {
+            return area.center() + (point - bounds.center()) * scale;
+        };
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor("#919191"));
+        for (const auto &bar : bars_)
+            painter.drawRect(QRectF(pixel(bar.topLeft()), pixel(bar.bottomRight())));
+        painter.setPen(QPen(QColor("#202020"), 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        for (qsizetype i = 1; i < points_.size(); ++i)
+            if (!breaks_.contains(int(i)))
+                painter.drawLine(pixel(project(points_[i - 1])), pixel(project(points_[i])));
+        for (int fraction : {1, 3, 5, 7}) {
+            const qsizetype index = points_.size() * fraction / 8;
+            if (index <= 0 || index >= points_.size() || breaks_.contains(int(index)))
+                continue;
+            const QPointF tip = pixel(project(points_[index]));
+            QPointF direction = tip - pixel(project(points_[index - 1]));
+            const double length = std::hypot(direction.x(), direction.y());
+            if (length < .01)
+                continue;
+            direction /= length;
+            const QPointF side(-direction.y(), direction.x());
+            painter.setBrush(QColor("#202020"));
+            painter.drawPolygon(
+                QPolygonF{tip, tip - direction * 5 + side * 2.5, tip - direction * 5 - side * 2.5});
+        }
+        painter.setPen(QColor("#555555"));
+        painter.drawText(QRect(9, 4, width() - 18, 18),
+                         topView_ ? "立柱俯视 · 按箭头绕行" : "横杆侧视 · 按箭头绕行");
+    }
+};
 class GateCard final : public QPushButton {
     QString type_, title_, subtitle_;
 
@@ -526,13 +629,22 @@ void StudioWindow::setupUi() {
     pl->addWidget(stepPanel_);
     connect(stepFace_, &QComboBox::currentIndexChanged, this, [this] { editRouteSelection(); });
     connect(stepReverse_, &QComboBox::currentIndexChanged, this, [this] { editRouteSelection(); });
-    auto *maneuverRow = new QHBoxLayout;
     maneuver_ = new QComboBox;
+    maneuver_->setObjectName("maneuverPattern");
     auto *applyManeuver = button("应用动作", "tool");
-    maneuverRow->addWidget(maneuver_, 1);
-    maneuverRow->addWidget(applyManeuver);
+    applyManeuver->setObjectName("applyManeuver");
     pl->addWidget(label("手动校正过门动作", "fieldLabel"));
-    pl->addLayout(maneuverRow);
+    pl->addWidget(maneuver_);
+    maneuverPreview_ = new ManeuverPreview;
+    pl->addWidget(maneuverPreview_);
+    maneuverHint_ = label({}, "subtle");
+    maneuverHint_->setWordWrap(true);
+    pl->addWidget(maneuverHint_);
+    pl->addWidget(applyManeuver);
+    connect(maneuver_, &QComboBox::currentIndexChanged, this, [this] {
+        if (!updating_)
+            updateManeuverPreview();
+    });
     connect(applyManeuver, &QPushButton::clicked, this, [this] { this->applyManeuver(); });
     dimensions_ = label({}, "subtle");
     dimensions_->setObjectName("componentDimensions");
@@ -645,6 +757,11 @@ void StudioWindow::setupUi() {
     notice_ = label("示例赛道 · 导入俯视图，即可识别生成并继续编辑。", "notice");
     notice_->setWordWrap(true);
     cl->addWidget(notice_);
+    routeStatus_ = label({}, "subtle");
+    routeStatus_->setObjectName("routeStatus");
+    routeStatus_->setWordWrap(true);
+    routeStatus_->hide();
+    cl->addWidget(routeStatus_);
     auto *frame = new QFrame;
     frame->setObjectName("canvasFrame");
     auto *fl = new QVBoxLayout(frame);
@@ -1009,11 +1126,25 @@ void StudioWindow::pushEdit(const QString &title, const TrackDocument &before,
     undo_.push(new DocumentCommand(this, title, before, after));
 }
 void StudioWindow::updateStats() {
-    int passes = 0;
-    for (const auto &step : effectiveRouteSteps(doc_))
+    int passes = 0, turnChecks = 0;
+    for (const auto &step : effectiveRouteSteps(doc_)) {
         passes += step.kind == "pass";
+        turnChecks += step.kind == "guide" && step.extra.value("raceCheckpoint").toBool();
+    }
     gateCount_->setText(QString("%1 / %2").arg(doc_.gates.size()).arg(passes));
+    gateCount_->setToolTip(
+        turnChecks ? QString("另有 %1 个翻绕检查点，在模拟器中约束绕行顺序。").arg(turnChecks)
+                   : QString());
     length_->setText(QString::number(routeLength(doc_), 'f', 1) + " m");
+    const auto curve = routeCurve(doc_);
+    QStringList hints;
+    if (turnChecks)
+        hints << QString("T1–T%1：%1 个辅助翻绕检查点，随赛道导出。").arg(turnChecks);
+    if (!curve.warnings.isEmpty())
+        hints << "路线待校正：" + curve.warnings.first();
+    routeStatus_->setText(hints.join("  "));
+    routeStatus_->setToolTip(curve.warnings.join("\n"));
+    routeStatus_->setVisible(!hints.isEmpty());
 }
 void StudioWindow::rebuildRouteList() {
     routeOrder_->clear();
@@ -1201,7 +1332,8 @@ void StudioWindow::applyManeuver() {
     const Gate *gate = findGate(doc_, selected_);
     if (!gate)
         return;
-    const auto replacement = gateManeuverSteps(*gate, maneuver_->currentData().toString());
+    const QString pattern = maneuver_->currentData().toString();
+    const auto replacement = gateManeuverSteps(*gate, pattern);
     if (replacement.isEmpty())
         return;
     const QString gateId = gate->id;
@@ -1210,7 +1342,7 @@ void StudioWindow::applyManeuver() {
             selectedRouteStep_ = step.id;
             break;
         }
-    edit("替换此门的过门动作", [gateId, replacement](TrackDocument &d) {
+    edit("替换此门的过门动作", [gateId, replacement, pattern](TrackDocument &d) {
         makeRouteExplicit(d);
         qsizetype first = d.routeSteps.size();
         for (qsizetype i = 0; i < d.routeSteps.size(); ++i)
@@ -1225,9 +1357,23 @@ void StudioWindow::applyManeuver() {
         first = std::min(first, d.routeSteps.size());
         for (qsizetype i = 0; i < replacement.size(); ++i)
             d.routeSteps.insert(first + i, replacement[i]);
+        for (auto &item : d.gates)
+            if (item.id == gateId)
+                item.extra.insert("routePattern", pattern);
     });
     sequenceTabs_->setCurrentIndex(0);
-    notice_->setText("已替换此实体的过门动作，箭头与编号已更新；Ctrl+Z 可恢复。");
+    notice_->setText("已应用绕行方向和三维曲线；请按箭头检查横杆周围的动作。Ctrl+Z 可恢复。");
+}
+void StudioWindow::updateManeuverPreview() {
+    const Gate *gate = findGate(doc_, selected_);
+    const QString pattern = maneuver_->currentData().toString();
+    static_cast<ManeuverPreview *>(maneuverPreview_)->setManeuver(gate, pattern);
+    const bool orbit = pattern == "orbit-bar-cw" || pattern == "orbit-bar-ccw";
+    maneuverHint_->setText(orbit ? "顺、逆时针以侧视图为准：从门的左侧沿横杆看向右侧。完整绕行一圈"
+                                   "，并导出辅助翻绕检查点。"
+                           : pattern == "single"
+                               ? "选择动作预览，再点“应用动作”替换此门已有的穿越。"
+                               : "按图示绕过杆件；检查预览后点“应用动作”。");
 }
 void StudioWindow::editTakeoff() {
     if (updating_)
@@ -1304,18 +1450,25 @@ void StudioWindow::updateSelection(const QString &id) {
         stepSummary_->setText(hasActiveStep ? passDescription(*gate, activeStep) : "选择一次穿越");
         maneuver_->clear();
         maneuver_->addItem("单次穿越", "single");
+        if (frame.centerlineModel && frame.centerDepth == 0 && !pillar) {
+            const QString bar = frame.levels > 1 ? "中横杆" : "顶横杆";
+            maneuver_->addItem("↻ 绕" + bar + "一圈 · 顺时针", "orbit-bar-cw");
+            maneuver_->addItem("↺ 绕" + bar + "一圈 · 逆时针", "orbit-bar-ccw");
+        }
         if (frame.levels > 1 && frame.centerDepth == 0) {
-            maneuver_->addItem("下门 → 绕后 → 上门", "lower-upper");
-            maneuver_->addItem("上门 → 绕后 → 下门", "upper-lower");
+            maneuver_->addItem("下门 → 绕中横杆 → 上门", "lower-upper");
+            maneuver_->addItem("上门 → 绕中横杆 → 下门", "upper-lower");
         }
         if (frame.columns > 1) {
             maneuver_->addItem("左窗 → 右窗，交替穿越", "left-right");
             maneuver_->addItem("右窗 → 左窗，交替穿越", "right-left");
         }
         if (frame.centerDepth > 0) {
-            maneuver_->addItem("顶部俯冲 → 下部穿出", "gravity-dive");
-            maneuver_->addItem("下部穿入 → 顶部穿出", "gravity-climb");
+            maneuver_->addItem("重力门 · 圆弧俯冲穿出", "gravity-dive");
+            maneuver_->addItem("重力门 · 圆弧爬升穿顶", "gravity-climb");
         }
+        maneuver_->setCurrentIndex(
+            std::max(0, maneuver_->findData(gate->extra.value("routePattern").toString())));
     }
     widthLabel_->setText(pillar                  ? "柱体边长 / m"
                          : frame.centerlineModel ? "横向中心距 / m"
@@ -1381,6 +1534,7 @@ void StudioWindow::updateSelection(const QString &id) {
         if (auto *sidebar = findChild<QScrollArea *>("sidebar"))
             sidebar->verticalScrollBar()->setValue(0);
     updating_ = false;
+    updateManeuverPreview();
     statusBar()->showMessage(
         gate
             ? QString("已选中 #%1 %2 · 再次按住组件或脚下光圈可移动 · Q/E 旋转")
@@ -1579,8 +1733,12 @@ void StudioWindow::exportTrack() {
         statusBar()->showMessage("起飞点必须单独设置，不能用第一个门代替", 8000);
         return;
     }
-    if (doc_.gates.isEmpty()) {
-        fail("请先生成或放置门架。");
+    const auto steps = effectiveRouteSteps(doc_);
+    if (std::none_of(steps.begin(), steps.end(), [](const RouteStep &step) {
+            return step.kind == "pass" ||
+                   (step.kind == "guide" && step.extra.value("raceCheckpoint").toBool());
+        })) {
+        fail("请先设置穿越步骤或翻绕检查点。");
         return;
     }
     QString p = QFileDialog::getSaveFileName(
@@ -1967,6 +2125,26 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     if (ladderPasses.size() != 2 || ladderPasses[0].level != 0 || ladderPasses[1].level != 1 ||
         ladderPasses[1].face != "back")
         return smokeFailure(__LINE__);
+    const auto beforeOrbit = doc_;
+    const int orbitPattern = maneuver_->findData(QString("orbit-bar-cw"));
+    if (orbitPattern < 0)
+        return smokeFailure(__LINE__);
+    maneuver_->setCurrentIndex(orbitPattern);
+    if (maneuverPreview_->isHidden() || !clickButton("应用动作") || doc_.gates.size() != 3 ||
+        routeOrder_->count() != 5)
+        return smokeFailure(__LINE__);
+    int turnChecks = 0;
+    for (const auto &step : effectiveRouteSteps(doc_))
+        turnChecks += step.kind == "guide" && step.extra.value("raceCheckpoint").toBool();
+    if (turnChecks != 2 || !routeStatus_->text().contains("2 个辅助翻绕检查点") ||
+        doc_.gates[0].extra.value("routePattern") != QJsonValue("orbit-bar-cw"))
+        return smokeFailure(__LINE__);
+    if (!saveProject(dir + "/circle-demo.otproj", doc_, &error) ||
+        !exportVelocidrone(dir + "/circle-demo.trk", doc_, &error))
+        return smokeFailure(__LINE__);
+    undo_.undo();
+    if (!sameDocument(doc_, beforeOrbit) || routeOrder_->count() != 4)
+        return smokeFailure(__LINE__);
     routeOrder_->setCurrentRow(1);
     stepReverse_->setCurrentIndex(1);
     const QString editedPass = selectedRouteStep_;
@@ -2094,6 +2272,7 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
                        {"colorPropertyUndoRedo", true},
                        {"imageDropAndAtomicUndo", true},
                        {"routeControlsAndContextualActions", true},
+                       {"clockwiseOrbitPreviewAndNativeTurnChecks", true},
                        {"independentTakeoffUndoRedo", true},
                        {"scaleKeepsTakeoffAndGuidesAligned", true},
                        {"zoom200OperationsMs", zoomMs},

@@ -2,11 +2,13 @@
 #include "scene3d.h"
 
 #include <QApplication>
+#include <QEventLoop>
 #include <QImage>
 #include <QKeyEvent>
 #include <QMatrix4x4>
 #include <QMouseEvent>
 #include <QSet>
+#include <QTimer>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -65,6 +67,11 @@ QRect redBounds(const QImage &image) {
                 bounds = bounds.united(QRect(x, y, 1, 1));
         }
     return bounds;
+}
+void advanceEvents(int milliseconds) {
+    QEventLoop loop;
+    QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+    loop.exec();
 }
 } // namespace
 
@@ -316,6 +323,31 @@ int main(int argc, char **argv) {
         pickedPasses.size() == clustered.routeSteps.size(),
         "all repeated-window number badges remain individually pickable after collision layout");
     scene.onRouteSelection = {};
+    ot::TrackDocument paused;
+    paused.closedLoop = false;
+    paused.routeStepsDefined = true;
+    for (const auto &point :
+         {QVector3D(-2, 1.6f, 0), QVector3D(-1.6f, 1.6f, 0), QVector3D(0, .05f, 0),
+          QVector3D(2, 1.6f, 0), QVector3D(3, 1.6f, 0)}) {
+        ot::RouteStep step;
+        step.id = ot::newGateId();
+        step.kind = "guide";
+        step.localGuide = point;
+        paused.routeSteps.append(step);
+    }
+    require(!ot::routeCurve(paused).breaks.isEmpty(), "3D preview pause fixture contains a gap");
+    scene.setDocument(&paused);
+    scene.fitTrack();
+    scene.setPreviewSpeed(233);
+    scene.setPreview(true);
+    advanceEvents(120);
+    const auto stoppedAtGap = scene.exportImage();
+    for (const int milliseconds : {23, 31, 37}) {
+        advanceEvents(milliseconds);
+        require(scene.exportImage() == stoppedAtGap,
+                "3D preview stays parked at the first gap instead of restarting across it");
+    }
+    scene.setPreview(false);
     ot::TrackDocument large;
     for (int i = 0; i < 500; ++i) {
         ot::Gate item;

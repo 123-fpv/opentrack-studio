@@ -1,0 +1,388 @@
+{
+    "backgroundPng": "",
+    "extra": {
+    },
+    "format": "OpenTrackStudio",
+    "gates": [
+        {
+            "elevation": 3.1,
+            "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1",
+                "routePattern": "orbit-bar-cw"
+            },
+            "height": 3,
+            "id": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "label": "",
+            "position": [
+                0,
+                0
+            ],
+            "type": "ladder",
+            "width": 3,
+            "yaw": 0
+        },
+        {
+            "elevation": 1.6,
+            "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1"
+            },
+            "height": 3,
+            "id": "894d1bbf-338e-4078-aa37-ba3daa330ab6",
+            "label": "",
+            "position": [
+                12,
+                0
+            ],
+            "type": "triple",
+            "width": 3,
+            "yaw": 0
+        },
+        {
+            "elevation": 1.6,
+            "extra": {
+                "beamOverhang": 0.2,
+                "beamThickness": 0.1,
+                "color": "#0D0D0D",
+                "frameGeometry": "centerline-v1"
+            },
+            "height": 3,
+            "id": "75ebe64a-f083-4f7f-bdbd-a827e560d7c2",
+            "label": "",
+            "position": [
+                24,
+                0
+            ],
+            "type": "cube",
+            "width": 3,
+            "yaw": 0
+        }
+    ],
+    "name": "未命名赛道",
+    "routeSteps": [
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "back",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "7cb0794a-4387-4c47-acf4-27cd8597d464",
+            "kind": "pass",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                0,
+                0
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "curveTangent": [
+                    0,
+                    0.3535533845424652,
+                    -0.7071067690849304
+                ],
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "e556c646-0a2a-4705-98ec-9ef6a3f80ce2",
+            "kind": "guide",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                -0.3535533845424652,
+                -0.7071067690849304
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "checkpointHeight": 0.8,
+                "checkpointWidth": 0.8,
+                "curveMode": "arc-v1",
+                "curveTangent": [
+                    0,
+                    0.5,
+                    -6.123234262925839e-17
+                ],
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                },
+                "raceCheckpoint": true
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "e4760fb5-95c1-4c52-ab6e-57d1099df521",
+            "kind": "guide",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                -3.0616171314629196e-17,
+                -1
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "curveTangent": [
+                    0,
+                    0.3535533845424652,
+                    0.7071067690849304
+                ],
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "854baa65-ca7f-4f7c-8f73-b0b5a03403a4",
+            "kind": "guide",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                0.3535533845424652,
+                -0.7071067690849304
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "409dd245-945d-49ae-8ce3-c5973fff2151",
+            "kind": "pass",
+            "label": "",
+            "level": 1,
+            "localGuide": [
+                0,
+                0,
+                0
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "curveTangent": [
+                    0,
+                    -0.3535533845424652,
+                    0.7071067690849304
+                ],
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "6dfa3e82-8325-4e8e-8f06-5125ae3841a1",
+            "kind": "guide",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                0.3535533845424652,
+                0.7071067690849304
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "checkpointHeight": 0.8,
+                "checkpointWidth": 0.8,
+                "curveMode": "arc-v1",
+                "curveTangent": [
+                    0,
+                    -0.5,
+                    1.8369702788777518e-16
+                ],
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                },
+                "raceCheckpoint": true
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "2dca355e-9d1e-4eee-b3d0-0ad8a29de55b",
+            "kind": "guide",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                9.184851394388759e-17,
+                1
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "curveTangent": [
+                    0,
+                    -0.3535533845424652,
+                    -0.7071067690849304
+                ],
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "front",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "d908e5b5-c324-41fb-842f-128b936500be",
+            "kind": "guide",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                -0.3535533845424652,
+                0.7071067690849304
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+                "curveMode": "arc-v1",
+                "maneuver": {
+                    "axis": "x",
+                    "sweepDegrees": 360,
+                    "type": "bar-orbit",
+                    "view": "along-local+X; +Z right; +Y up",
+                    "winding": -1
+                }
+            },
+            "face": "back",
+            "gateId": "80e4af1a-b5dc-46f5-801e-57e47886227d",
+            "id": "4b858605-232c-4518-982c-ef18e5073a7e",
+            "kind": "pass",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                0,
+                0
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+            },
+            "face": "front",
+            "gateId": "894d1bbf-338e-4078-aa37-ba3daa330ab6",
+            "id": "894d1bbf-338e-4078-aa37-ba3daa330ab6",
+            "kind": "pass",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                0,
+                0
+            ],
+            "reverse": false
+        },
+        {
+            "column": 0,
+            "extra": {
+            },
+            "face": "front",
+            "gateId": "75ebe64a-f083-4f7f-bdbd-a827e560d7c2",
+            "id": "75ebe64a-f083-4f7f-bdbd-a827e560d7c2",
+            "kind": "pass",
+            "label": "",
+            "level": 0,
+            "localGuide": [
+                0,
+                0,
+                0
+            ],
+            "reverse": false
+        }
+    ],
+    "scenery": "Football Stadium",
+    "takeoff": {
+        "elevation": -0.86,
+        "enabled": true,
+        "extra": {
+        },
+        "position": [
+            0,
+            -6
+        ],
+        "yaw": 0
+    },
+    "version": 1,
+    "view": {
+        "backgroundOpacity": 0.35,
+        "backgroundOrigin": [
+            -30,
+            -20
+        ],
+        "closedLoop": true,
+        "gridSize": 1,
+        "metersPerPixel": 0.05,
+        "showBackground": false
+    }
+}

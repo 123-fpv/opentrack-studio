@@ -233,8 +233,15 @@ struct Scene3D::Impl {
         QObject::connect(&timer, &QTimer::timeout, q, [this] {
             const double delta = std::clamp(elapsed.restart() / 1000.0, 0.0, .10);
             travel += delta * speedKph / 3.6;
-            if (!routeLengths.empty() && routeLengths.back() > .001)
-                travel = std::fmod(travel, routeLengths.back());
+            if (!routeLengths.empty() && previewEnd > 0) {
+                const double maximum = routeLengths[previewEnd - 1];
+                if (!routeBreaks.isEmpty() && travel >= maximum) {
+                    travel = maximum;
+                    previewPausedAtGap = true;
+                    timer.stop();
+                } else if (maximum > .001)
+                    travel = std::fmod(travel, maximum);
+            }
             q->update();
             if (fallback->isVisible())
                 fallback->update();
@@ -277,10 +284,13 @@ struct Scene3D::Impl {
     double speedKph = 70, travel = 0;
     std::vector<QVector3D> route;
     std::vector<double> routeLengths;
+    QVector<int> routeBreaks;
+    size_t previewEnd = 0;
+    bool previewPausedAtGap = false;
     struct RouteVisual {
         RouteStep step;
         RouteStepGeometry geometry;
-        int number = 0, gateNumber = 0, visit = 0, overlap = 0;
+        int number = 0, gateNumber = 0, visit = 0, overlap = 0, turnNumber = 0;
     };
     std::vector<RouteVisual> routeVisuals;
     mutable QHash<QString, QRectF> routeBadgeCache;
@@ -365,6 +375,11 @@ struct Scene3D::Impl {
         routeBadgesReady = true;
         const QRectF available(q->rect().adjusted(12, 58, -12, -55));
         QVector<QRectF> occupied;
+        for (const auto &visual : routeVisuals) {
+            QPointF point;
+            if (visual.turnNumber && project(visual.geometry.position, &point))
+                occupied.append(QRectF(point + QPointF(7, -23), QSizeF(30, 20)));
+        }
         if (const auto *active = gate(selected)) {
             QPointF point;
             if (project(point3(*active) +
@@ -523,15 +538,23 @@ struct Scene3D::Impl {
             batch->vertices.clear();
         route.clear();
         routeLengths.clear();
+        routeBreaks.clear();
+        previewEnd = 0;
+        if (!document)
+            previewPausedAtGap = false;
         routeVisuals.clear();
         routeBadgesReady = false;
         if (document) {
-            const auto points = routePolyline(*document);
-            route.assign(points.begin(), points.end());
+            const auto curve = routeCurve(*document);
+            route.assign(curve.points.begin(), curve.points.end());
+            routeBreaks = curve.breaks;
+            previewEnd = routeBreaks.isEmpty() ? route.size() : size_t(routeBreaks.first());
+            if (routeBreaks.isEmpty())
+                previewPausedAtGap = false;
             QHash<QString, int> gateNumbers, visits, overlaps;
             for (qsizetype i = 0; i < document->gates.size(); ++i)
                 gateNumbers.insert(document->gates[i].id, static_cast<int>(i + 1));
-            int number = 0;
+            int number = 0, turnNumber = 0;
             for (const auto &step : effectiveRouteSteps(*document)) {
                 const auto geometry = routeStepGeometry(*document, step);
                 if (!geometry.valid)
@@ -548,7 +571,9 @@ struct Scene3D::Impl {
                                         QString::number(p.y(), 'f', 3) + '/' +
                                         QString::number(p.z(), 'f', 3);
                     visual.overlap = overlaps[key]++;
-                }
+                } else if (step.kind == QStringLiteral("guide") &&
+                           step.extra.value(QStringLiteral("raceCheckpoint")).toBool())
+                    visual.turnNumber = ++turnNumber;
                 routeVisuals.push_back(visual);
             }
         }
@@ -674,6 +699,10 @@ struct Scene3D::Impl {
                 routeLengths.push_back(0);
                 for (size_t i = 1; i < route.size(); ++i) {
                     const auto a = route[i - 1], b = route[i];
+                    if (routeBreaks.contains(int(i))) {
+                        routeLengths.push_back(length);
+                        continue;
+                    }
                     length += (b - a).length();
                     routeLengths.push_back(length);
                     tube(routeTube, a, b, .035f, QColor("#626262"));
@@ -705,13 +734,18 @@ struct Scene3D::Impl {
     }
 
     QVector3D previewPoint() const {
-        if (route.empty() || routeLengths.empty())
+        if (route.empty() || previewEnd == 0)
             return {};
-        const double maximum = routeLengths.back();
-        const double length = maximum > .001 ? std::fmod(travel, maximum) : 0;
-        const auto it = std::lower_bound(routeLengths.begin(), routeLengths.end(), length);
+        if (routeLengths.empty())
+            return route.front();
+        const double maximum = routeLengths[previewEnd - 1];
+        const double length = !routeBreaks.isEmpty() ? std::min(travel, maximum)
+                              : maximum > .001       ? std::fmod(travel, maximum)
+                                                     : 0;
+        const auto it = std::lower_bound(routeLengths.begin(),
+                                         routeLengths.begin() + ptrdiff_t(previewEnd), length);
         const size_t index = static_cast<size_t>(std::distance(routeLengths.begin(), it));
-        if (index == 0 || index >= route.size())
+        if (index == 0 || index >= previewEnd)
             return route.front();
         const double denominator = routeLengths[index] - routeLengths[index - 1];
         const float fraction =
@@ -795,7 +829,16 @@ struct Scene3D::Impl {
                     painter.drawPolygon(QPolygonF{
                         center + QPointF(0, -glyphRadius), center + QPointF(glyphRadius, 0),
                         center + QPointF(0, glyphRadius), center + QPointF(-glyphRadius, 0)});
-                    continue;
+                    if (!visual.turnNumber)
+                        continue;
+                    painter.setFont(QFont(QStringLiteral("Segoe UI"), 8, QFont::DemiBold));
+                    const QRectF caption(center + QPointF(7, -23), QSizeF(30, 20));
+                    painter.setPen(QPen(Qt::white, 3));
+                    painter.setBrush(QColor(255, 255, 255, 220));
+                    painter.drawRoundedRect(caption, 3, 3);
+                    painter.setPen(QColor("#333333"));
+                    painter.drawText(caption, Qt::AlignCenter,
+                                     QStringLiteral("T%1").arg(visual.turnNumber));
                 }
                 if (active) {
                     QPolygonF window;
@@ -901,14 +944,16 @@ struct Scene3D::Impl {
         painter.drawRoundedRect(hintRect, 9, 9);
         painter.setPen(QColor("#525252"));
         painter.drawText(hintRect.adjusted(11, 0, -6, 0), Qt::AlignVCenter | Qt::AlignLeft, hint);
-        if (timer.isActive()) {
+        if (timer.isActive() || previewPausedAtGap) {
             const QRectF tag(16, 54, 200, 27);
             painter.setPen(Qt::NoPen);
             painter.setBrush(QColor(235, 235, 235, 244));
             painter.drawRoundedRect(tag, 8, 8);
             painter.setPen(QColor("#3e3e3e"));
             painter.drawText(tag, Qt::AlignCenter,
-                             QStringLiteral("几何路线预览 · %1 km/h").arg(qRound(speedKph)));
+                             previewPausedAtGap
+                                 ? QStringLiteral("预览已在净空断点处暂停")
+                                 : QStringLiteral("几何路线预览 · %1 km/h").arg(qRound(speedKph)));
         }
         const QPointF base(q->width() - 47.0, q->height() - 43.0);
         const auto axis = [&](const QVector3D &direction, const QColor &color,
@@ -1076,7 +1121,7 @@ struct Scene3D::Impl {
                 }
             }
         }
-        if (timer.isActive() && !route.empty()) {
+        if ((timer.isActive() || previewPausedAtGap) && !route.empty()) {
             QPointF marker;
             if (project(previewPoint(), &marker)) {
                 painter.setPen(QPen(Qt::white, 2));
@@ -1279,10 +1324,15 @@ void Scene3D::setPreviewSpeed(double speed) {
 
 void Scene3D::setPreview(bool enabled) {
     if (enabled) {
+        if (d_->previewPausedAtGap)
+            d_->travel = 0;
+        d_->previewPausedAtGap = false;
         d_->elapsed.start();
         d_->timer.start();
-    } else
+    } else {
+        d_->previewPausedAtGap = false;
         d_->timer.stop();
+    }
     update();
     d_->fallback->update();
 }
@@ -1415,7 +1465,7 @@ void Scene3D::paintGL() {
         draw(d_->ghostBatch);
         glDepthMask(GL_TRUE);
     }
-    if (d_->timer.isActive() && !d_->route.empty()) {
+    if ((d_->timer.isActive() || d_->previewPausedAtGap) && !d_->route.empty()) {
         d_->preview.vertices.clear();
         const auto center = d_->previewPoint();
         const float r = .33f;

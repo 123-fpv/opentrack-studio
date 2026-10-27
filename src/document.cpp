@@ -1,6 +1,8 @@
 #include "document.h"
 
 #include <QBuffer>
+#include <QCryptographicHash>
+#include <QDataStream>
 #include <QFile>
 #include <QHash>
 #include <QImageReader>
@@ -25,8 +27,10 @@ constexpr qint64 kMaxImagePixels = 64LL * 1024 * 1024;
 constexpr qsizetype kMaxGates = 20000;
 constexpr qsizetype kMaxRouteSteps = 100000;
 constexpr double kMaxCoordinate = 1000000.0;
+constexpr float kRouteClearance = .20f;
 
 RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step);
+QVector3D curveTangentForStep(const Gate *gate, const RouteStep &step);
 
 bool fail(QString *error, const QString &message) {
     if (error)
@@ -232,6 +236,29 @@ bool validateDocument(const TrackDocument &document, QString *error) {
         }
         if (!geometryForStep(gate, step).valid)
             return fail(error, QStringLiteral("路线步骤 %1 的面、通过格或开口无效。").arg(step.id));
+        const auto hint = step.extra.value(QStringLiteral("curveTangent"));
+        if (!hint.isUndefined()) {
+            QVector3D tangent;
+            if (!vector3(hint, &tangent, error) || tangent.lengthSquared() < 1e-12f)
+                return fail(error, QStringLiteral("路线步骤 %1 的曲线切向量无效。").arg(step.id));
+        }
+        const auto checkpointUp = step.extra.value(QStringLiteral("checkpointUp"));
+        if (!checkpointUp.isUndefined()) {
+            QVector3D up;
+            if (!vector3(checkpointUp, &up, error) || up.lengthSquared() < 1e-12f)
+                return fail(error, QStringLiteral("辅助检查点上方向无效。"));
+        }
+        const auto race = step.extra.value(QStringLiteral("raceCheckpoint"));
+        if (!race.isUndefined() && !race.isBool())
+            return fail(error, QStringLiteral("辅助检查点标记必须是布尔值。"));
+        if (race.toBool(false) && (step.kind != QStringLiteral("guide") || hint.isUndefined()))
+            return fail(error, QStringLiteral("辅助转向检查点需要有效的引导切向量。"));
+        for (const auto &field :
+             {QStringLiteral("checkpointWidth"), QStringLiteral("checkpointHeight")}) {
+            const auto value = step.extra.value(field);
+            if (!value.isUndefined() && (!value.isDouble() || !inRange(value.toDouble(), .1, 100)))
+                return fail(error, QStringLiteral("辅助检查点尺寸无效。"));
+        }
     }
     if (!inRange(document.takeoff.position.x(), -kMaxCoordinate, kMaxCoordinate) ||
         !inRange(document.takeoff.position.y(), -kMaxCoordinate, kMaxCoordinate) ||
@@ -722,6 +749,34 @@ double gatePassageElevation(const Gate &gate) {
 }
 
 namespace {
+QVector3D transformedCurveHint(const Gate *gate, const RouteStep &step, const QString &field) {
+    const auto raw = step.extra.value(field);
+    if (!raw.isArray() || raw.toArray().size() != 3)
+        return {};
+    QVector3D tangent;
+    const auto array = raw.toArray();
+    for (int axis = 0; axis < 3; ++axis) {
+        const auto value = array[axis];
+        if (!value.isDouble() || !std::isfinite(value.toDouble()) ||
+            std::abs(value.toDouble()) > 1e6)
+            return {};
+        tangent[axis] = static_cast<float>(value.toDouble());
+    }
+    if (gate) {
+        const auto metrics = gateFrameMetrics(*gate);
+        tangent *= QVector3D(static_cast<float>(metrics.columns * gate->width / 2),
+                             static_cast<float>(metrics.levels * gate->height / 2),
+                             static_cast<float>(gate->width / 2));
+        const auto rotation = QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate->yaw));
+        tangent = rotation.rotatedVector(tangent);
+    }
+    return tangent.lengthSquared() > 1e-12f ? tangent.normalized() : QVector3D();
+}
+
+QVector3D curveTangentForStep(const Gate *gate, const RouteStep &step) {
+    return transformedCurveHint(gate, step, QStringLiteral("curveTangent"));
+}
+
 RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
     RouteStepGeometry geometry;
     if (step.kind == QStringLiteral("guide")) {
@@ -744,6 +799,25 @@ RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
         geometry.valid = std::isfinite(geometry.position.x()) &&
                          std::isfinite(geometry.position.y()) &&
                          std::isfinite(geometry.position.z());
+        if (step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false)) {
+            geometry.normal = curveTangentForStep(gate, step);
+            auto reference =
+                std::abs(geometry.normal.y()) > .9f ? QVector3D(0, 0, 1) : QVector3D(0, 1, 0);
+            if (step.extra.contains(QStringLiteral("checkpointUp")))
+                reference = transformedCurveHint(gate, step, QStringLiteral("checkpointUp"));
+            geometry.right = QVector3D::crossProduct(reference, geometry.normal).normalized();
+            geometry.up = QVector3D::crossProduct(geometry.normal, geometry.right).normalized();
+            geometry.openingWidth =
+                step.extra.value(QStringLiteral("checkpointWidth")).toDouble(.8);
+            geometry.openingHeight =
+                step.extra.value(QStringLiteral("checkpointHeight")).toDouble(.8);
+            geometry.valid =
+                geometry.valid && geometry.normal.lengthSquared() > .9f &&
+                geometry.right.lengthSquared() > .9f && geometry.up.lengthSquared() > .9f &&
+                std::isfinite(geometry.openingWidth) && std::isfinite(geometry.openingHeight) &&
+                geometry.openingWidth >= .1 && geometry.openingWidth <= 100 &&
+                geometry.openingHeight >= .1 && geometry.openingHeight <= 100;
+        }
         return geometry;
     }
     if (step.kind != QStringLiteral("pass") || !gate)
@@ -850,6 +924,9 @@ QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document) {
 QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
     QVector<RouteStep> steps;
     const auto metrics = gateFrameMetrics(gate);
+    const QVector3D scale(static_cast<float>(metrics.columns * gate.width / 2),
+                          static_cast<float>(metrics.levels * gate.height / 2),
+                          static_cast<float>(gate.width / 2));
     const auto addPass = [&steps, &gate](int column, int level, const QString &face,
                                          bool reverse = false) {
         RouteStep step;
@@ -859,14 +936,26 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
         step.level = level;
         step.face = face;
         step.reverse = reverse;
+        step.extra.insert(QStringLiteral("curveMode"), QStringLiteral("arc-v1"));
         steps.append(step);
     };
-    const auto addGuide = [&steps, &gate](const QVector3D &local) {
+    const auto addGuide = [&steps, &gate, &scale](const QVector3D &local, const QVector3D &tangent,
+                                                  bool raceCheckpoint = false) {
         RouteStep step;
         step.id = newGateId();
         step.gateId = gate.id;
         step.kind = QStringLiteral("guide");
-        step.localGuide = local;
+        step.localGuide = local / scale;
+        const auto normalizedTangent = tangent / scale;
+        step.extra.insert(QStringLiteral("curveMode"), QStringLiteral("arc-v1"));
+        step.extra.insert(
+            QStringLiteral("curveTangent"),
+            QJsonArray{normalizedTangent.x(), normalizedTangent.y(), normalizedTangent.z()});
+        if (raceCheckpoint) {
+            step.extra.insert(QStringLiteral("raceCheckpoint"), true);
+            step.extra.insert(QStringLiteral("checkpointWidth"), .8);
+            step.extra.insert(QStringLiteral("checkpointHeight"), .8);
+        }
         steps.append(step);
     };
     if (pattern == QStringLiteral("single")) {
@@ -875,12 +964,51 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
                 std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(0), 0,
                            metrics.levels - 1),
                 QStringLiteral("front"));
+    } else if ((pattern == QStringLiteral("orbit-bar-cw") ||
+                pattern == QStringLiteral("orbit-bar-ccw")) &&
+               metrics.centerlineModel && metrics.centerDepth == 0 && metrics.openingWidth > .5 &&
+               metrics.openingHeight > .5) {
+        const bool ladder = metrics.levels > 1;
+        const int winding = pattern == QStringLiteral("orbit-bar-ccw") ? 1 : -1;
+        const int column = std::clamp(gate.extra.value(QStringLiteral("passColumn")).toInt(0), 0,
+                                      metrics.columns - 1);
+        const float x = static_cast<float>((column - (metrics.columns - 1) / 2.0) * gate.width);
+        const float centerY = ladder ? 0.f : static_cast<float>(gate.height / 2);
+        const float radius = static_cast<float>(gate.height / 2);
+        for (int i = 0; i <= 8; ++i) {
+            const double angle = i * 3.14159265358979323846 / 4;
+            if (i == 0 || i == 8)
+                addPass(column, 0, winding > 0 ? QStringLiteral("front") : QStringLiteral("back"));
+            else if (ladder && i == 4)
+                addPass(column, 1, winding > 0 ? QStringLiteral("back") : QStringLiteral("front"));
+            else
+                addGuide({x, centerY - radius * static_cast<float>(std::cos(angle)),
+                          winding * radius * static_cast<float>(std::sin(angle))},
+                         {0, radius * static_cast<float>(std::sin(angle)),
+                          winding * radius * static_cast<float>(std::cos(angle))},
+                         i == 2 || i == 6 || (!ladder && i == 4));
+            steps.last().extra.insert(
+                QStringLiteral("maneuver"),
+                QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("bar-orbit")},
+                    {QStringLiteral("axis"), QStringLiteral("x")},
+                    {QStringLiteral("winding"), winding},
+                    {QStringLiteral("sweepDegrees"), 360},
+                    {QStringLiteral("view"), QStringLiteral("along-local+X; +Z right; +Y up")}});
+        }
     } else if ((pattern == QStringLiteral("lower-upper") ||
                 pattern == QStringLiteral("upper-lower")) &&
                metrics.centerlineModel && metrics.levels > 1 && metrics.centerDepth == 0) {
         const bool lowerFirst = pattern == QStringLiteral("lower-upper");
         addPass(0, lowerFirst ? 0 : metrics.levels - 1, QStringLiteral("front"));
-        addGuide({0, 0, .8f});
+        const float radius = static_cast<float>(gate.height / 2);
+        for (int i = 1; i <= 3; ++i) {
+            const double angle = i * 3.14159265358979323846 / 4;
+            addGuide({0, (lowerFirst ? -radius : radius) * static_cast<float>(std::cos(angle)),
+                      radius * static_cast<float>(std::sin(angle))},
+                     {0, (lowerFirst ? radius : -radius) * static_cast<float>(std::sin(angle)),
+                      radius * static_cast<float>(std::cos(angle))});
+        }
         addPass(0, lowerFirst ? metrics.levels - 1 : 0, QStringLiteral("back"));
     } else if ((pattern == QStringLiteral("left-right") ||
                 pattern == QStringLiteral("right-left")) &&
@@ -888,13 +1016,21 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
         const bool leftFirst = pattern == QStringLiteral("left-right");
         for (int i = 0; i < metrics.columns; ++i) {
             const int column = leftFirst ? i : metrics.columns - i - 1;
-            if (i > 0) {
-                const float x = static_cast<float>(
-                    (column + (leftFirst ? -.5 : .5) - (metrics.columns - 1) / 2.0) * 2 /
-                    metrics.columns);
-                addGuide({x, 0, i % 2 ? .8f : -.8f});
-            }
             addPass(column, 0, i % 2 ? QStringLiteral("back") : QStringLiteral("front"));
+            if (i + 1 < metrics.columns) {
+                const float centerX = static_cast<float>(
+                    (column + (leftFirst ? .5 : -.5) - (metrics.columns - 1) / 2.0) * gate.width);
+                const float radius = static_cast<float>(gate.width / 2);
+                const float direction = leftFirst ? 1.f : -1.f;
+                const float side = i % 2 ? -1.f : 1.f;
+                for (int j = 1; j <= 3; ++j) {
+                    const double angle = j * 3.14159265358979323846 / 4;
+                    addGuide({centerX - direction * radius * static_cast<float>(std::cos(angle)), 0,
+                              side * radius * static_cast<float>(std::sin(angle))},
+                             {direction * radius * static_cast<float>(std::sin(angle)), 0,
+                              side * radius * static_cast<float>(std::cos(angle))});
+                }
+            }
         }
     } else if ((pattern == QStringLiteral("gravity-dive") ||
                 pattern == QStringLiteral("gravity-climb")) &&
@@ -902,9 +1038,21 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
         if (pattern == QStringLiteral("gravity-dive")) {
             for (int level = metrics.levels - 1; level >= 0; --level)
                 addPass(0, level, QStringLiteral("top"));
+            const float halfH = static_cast<float>(gate.height / 2),
+                        halfW = static_cast<float>(gate.width / 2);
+            const float top = static_cast<float>((1 - metrics.levels / 2.0) * gate.height);
+            const float rootHalf = std::sqrt(.5f);
+            addGuide({0, top - halfH * rootHalf, -halfW + halfW * rootHalf},
+                     {0, -halfH * rootHalf, -halfW * rootHalf});
             addPass(0, 0, QStringLiteral("front"), true);
         } else {
             addPass(0, 0, QStringLiteral("front"));
+            const float halfH = static_cast<float>(gate.height / 2),
+                        halfW = static_cast<float>(gate.width / 2);
+            const float top = static_cast<float>((1 - metrics.levels / 2.0) * gate.height);
+            const float rootHalf = std::sqrt(.5f);
+            addGuide({0, top - halfH * rootHalf, -halfW + halfW * rootHalf},
+                     {0, halfH * rootHalf, halfW * rootHalf});
             for (int level = 0; level < metrics.levels; ++level)
                 addPass(0, level, QStringLiteral("top"), true);
         }
@@ -912,67 +1060,431 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
     return steps;
 }
 
-QVector<QVector3D> routePolyline(const TrackDocument &document) {
+namespace {
+bool segmentBox(const QVector3D &a, const QVector3D &b, const QVector3D &low,
+                const QVector3D &high) {
+    float begin = 0, end = 1;
+    for (int axis = 0; axis < 3; ++axis) {
+        const float delta = b[axis] - a[axis];
+        if (std::abs(delta) < 1e-8f) {
+            if (a[axis] < low[axis] || a[axis] > high[axis])
+                return false;
+        } else {
+            const float t0 = (low[axis] - a[axis]) / delta;
+            const float t1 = (high[axis] - a[axis]) / delta;
+            begin = std::max(begin, std::min(t0, t1));
+            end = std::min(end, std::max(t0, t1));
+            if (begin > end)
+                return false;
+        }
+    }
+    return true;
+}
+
+struct CurveObstacle {
+    QVector3D origin, low, high;
+    QQuaternion rotation, inverse;
+    QVector<GateBeam> beams;
+};
+
+struct CurveClearance {
+    QVector<CurveObstacle> obstacles;
+    explicit CurveClearance(const TrackDocument &document) {
+        for (const auto &gate : document.gates) {
+            CurveObstacle obstacle;
+            obstacle.origin = {static_cast<float>(gate.position.x()),
+                               static_cast<float>(gate.elevation),
+                               static_cast<float>(gate.position.y())};
+            obstacle.rotation =
+                QQuaternion::fromAxisAndAngle(0, 1, 0, static_cast<float>(gate.yaw));
+            if (gate.type == QStringLiteral("dive"))
+                obstacle.rotation *= QQuaternion::fromAxisAndAngle(1, 0, 0, 90);
+            obstacle.inverse = obstacle.rotation.conjugated();
+            obstacle.beams = gateFrameBeams(gate);
+            if (gate.type == QStringLiteral("pillar"))
+                obstacle.beams = {{{0, 0, 0},
+                                   {static_cast<float>(gate.width), static_cast<float>(gate.height),
+                                    static_cast<float>(gate.width)}}};
+            obstacle.low = {1e20f, 1e20f, 1e20f};
+            obstacle.high = -obstacle.low;
+            for (const auto &beam : obstacle.beams) {
+                const auto half =
+                    beam.size / 2 + QVector3D(kRouteClearance + .01f, kRouteClearance + .01f,
+                                              kRouteClearance + .01f);
+                for (int mask = 0; mask < 8; ++mask) {
+                    const auto point =
+                        obstacle.origin +
+                        obstacle.rotation.rotatedVector(beam.center +
+                                                        QVector3D(mask & 1 ? half.x() : -half.x(),
+                                                                  mask & 2 ? half.y() : -half.y(),
+                                                                  mask & 4 ? half.z() : -half.z()));
+                    for (int axis = 0; axis < 3; ++axis) {
+                        obstacle.low[axis] = std::min(obstacle.low[axis], point[axis]);
+                        obstacle.high[axis] = std::max(obstacle.high[axis], point[axis]);
+                    }
+                }
+            }
+            obstacles.append(obstacle);
+        }
+    }
+    bool segment(const QVector3D &a, const QVector3D &b,
+                 QVector<QPair<int, int>> *hits = nullptr) const {
+        if (!std::isfinite(a.x()) || !std::isfinite(a.y()) || !std::isfinite(a.z()) ||
+            !std::isfinite(b.x()) || !std::isfinite(b.y()) || !std::isfinite(b.z()) ||
+            std::min(a.y(), b.y()) < kRouteClearance - 1e-5f)
+            return false;
+        bool clear = true;
+        for (qsizetype i = 0; i < obstacles.size(); ++i) {
+            const auto &obstacle = obstacles[i];
+            if (!segmentBox(a, b, obstacle.low, obstacle.high))
+                continue;
+            const auto localA = obstacle.inverse.rotatedVector(a - obstacle.origin);
+            const auto localB = obstacle.inverse.rotatedVector(b - obstacle.origin);
+            for (qsizetype j = 0; j < obstacle.beams.size(); ++j) {
+                const auto &beam = obstacle.beams[j];
+                const auto half =
+                    beam.size / 2 + QVector3D(kRouteClearance + .01f, kRouteClearance + .01f,
+                                              kRouteClearance + .01f);
+                if (segmentBox(localA, localB, beam.center - half, beam.center + half)) {
+                    if (!hits)
+                        return false;
+                    clear = false;
+                    hits->append({static_cast<int>(i), static_cast<int>(j)});
+                }
+            }
+        }
+        return clear;
+    }
+};
+
+QVector<QVector3D> sampleCurve(const QVector3D &a, const QVector3D &b, const QVector3D &tangentA,
+                               const QVector3D &tangentB) {
+    const auto c = a + tangentA / 3, d = b - tangentB / 3;
+    const double length = (c - a).length() + (d - c).length() + (b - d).length();
+    const int samples = std::clamp(static_cast<int>(std::min(length / .06, 1024.0)) + 1, 2, 1024);
     QVector<QVector3D> points;
+    points.reserve(samples + 1);
+    points.append(a);
+    for (int i = 1; i < samples; ++i) {
+        const float t = static_cast<float>(i) / samples, u = 1 - t;
+        points.append(a * (u * u * u) + c * (3 * u * u * t) + d * (3 * u * t * t) +
+                      b * (t * t * t));
+    }
+    points.append(b);
+    return points;
+}
+
+bool clearPoints(const CurveClearance &clearance, const QVector<QVector3D> &points) {
+    for (qsizetype i = 1; i < points.size(); ++i)
+        if (!clearance.segment(points[i - 1], points[i]))
+            return false;
+    return true;
+}
+
+QVector<QVector3D> detour(const CurveClearance &clearance, const QVector3D &a, const QVector3D &b,
+                          const QVector3D &directionA, const QVector3D &directionB) {
+    if (!clearance.segment(a, a) || !clearance.segment(b, b))
+        return {};
+    const float lead = std::min(.35f, (b - a).length() * .2f);
+    const auto start = a + directionA * lead, end = b - directionB * lead;
+    if (!clearance.segment(a, start) || !clearance.segment(end, b))
+        return {};
+    QVector<QVector3D> nodes{start, end};
+    QVector<QPair<int, int>> hits;
+    clearance.segment(start, end, &hits);
+    const float maximum = std::max(8.f, (end - start).length() * 3 + 3);
+    for (const auto &hit : hits) {
+        const auto &obstacle = clearance.obstacles[hit.first];
+        const auto &beam = obstacle.beams[hit.second];
+        const auto half = beam.size / 2 + QVector3D(kRouteClearance + .14f, kRouteClearance + .14f,
+                                                    kRouteClearance + .14f);
+        for (int candidate = 0; candidate < 14 && nodes.size() < 74; ++candidate) {
+            QVector3D local;
+            if (candidate < 8)
+                local = {candidate & 1 ? half.x() : -half.x(), candidate & 2 ? half.y() : -half.y(),
+                         candidate & 4 ? half.z() : -half.z()};
+            else {
+                const int axis = (candidate - 8) / 2;
+                local[axis] = candidate % 2 ? half[axis] : -half[axis];
+            }
+            auto point = obstacle.origin + obstacle.rotation.rotatedVector(beam.center + local);
+            point.setY(std::max(point.y(), kRouteClearance + .04f));
+            if ((point - start).length() + (point - end).length() <= maximum &&
+                clearance.segment(point, point))
+                nodes.append(point);
+        }
+    }
+    const int count = static_cast<int>(nodes.size());
+    QVector<float> distances(count, std::numeric_limits<float>::infinity());
+    QVector<int> previous(count, -1);
+    QVector<bool> visited(count, false);
+    QVector<qint8> visible(count * count, -1);
+    distances[0] = 0;
+    for (int iteration = 0; iteration < count; ++iteration) {
+        int current = -1;
+        float best = std::numeric_limits<float>::infinity();
+        for (int i = 0; i < count; ++i)
+            if (!visited[i] && distances[i] + (nodes[i] - end).length() < best) {
+                best = distances[i] + (nodes[i] - end).length();
+                current = i;
+            }
+        if (current < 0 || current == 1)
+            break;
+        visited[current] = true;
+        for (int next = 0; next < count; ++next) {
+            if (visited[next] || next == current)
+                continue;
+            auto &edge = visible[current * count + next];
+            if (edge < 0) {
+                edge = clearance.segment(nodes[current], nodes[next]) ? 1 : 0;
+                visible[next * count + current] = edge;
+            }
+            const float distance = distances[current] + (nodes[current] - nodes[next]).length();
+            if (edge == 1 && distance < distances[next]) {
+                distances[next] = distance;
+                previous[next] = current;
+            }
+        }
+    }
+    if (!std::isfinite(distances[1]))
+        return {};
+    QVector<QVector3D> path;
+    for (int index = 1; index >= 0; index = previous[index]) {
+        path.prepend(nodes[index]);
+        if (index == 0)
+            break;
+    }
+    path.prepend(a);
+    path.append(b);
+    return path;
+}
+
+struct CurveNode {
+    QVector3D point, direction;
+    bool pass = false, arc = false;
+};
+
+RouteCurveResult buildConstrainedCurve(const TrackDocument &document) {
+    RouteCurveResult result;
     const auto steps = effectiveRouteSteps(document);
+    if (steps.size() > 10000 || document.gates.size() > 10000) {
+        result.clearanceSatisfied = false;
+        result.smooth = false;
+        result.warnings << QStringLiteral("路线过大，已暂停高精度曲线预览；请分段检查。");
+        return result;
+    }
+    const CurveClearance clearance(document);
     QHash<QString, const Gate *> gates;
     for (const auto &gate : document.gates)
         gates.insert(gate.id, &gate);
-    const auto append = [&points](const QVector3D &point) {
-        if (points.isEmpty() || (points.last() - point).lengthSquared() > 1e-10f)
-            points.append(point);
-    };
-    const bool explicitRoute = document.routeStepsDefined || !document.routeSteps.isEmpty();
+    QVector<CurveNode> nodes;
     for (const auto &step : steps) {
-        const auto geometry = geometryForStep(gates.value(step.gateId, nullptr), step);
-        if (!geometry.valid)
-            continue;
-        if (explicitRoute && step.kind == QStringLiteral("pass")) {
-            const float lead = static_cast<float>(
-                std::clamp(std::min(geometry.openingWidth, geometry.openingHeight) * .2, .15, .6));
-            append(geometry.position - geometry.normal * lead);
-            append(geometry.position);
-            append(geometry.position + geometry.normal * lead);
-        } else {
-            append(geometry.position);
+        const auto *gate = gates.value(step.gateId, nullptr);
+        const auto geometry = geometryForStep(gate, step);
+        if (!geometry.valid || !std::isfinite(geometry.position.x()) ||
+            !std::isfinite(geometry.position.y()) || !std::isfinite(geometry.position.z())) {
+            result.clearanceSatisfied = false;
+            result.warnings << QStringLiteral("路线含无效步骤，未跳过或虚构穿越。");
+            return result;
         }
+        CurveNode node;
+        node.point = geometry.position;
+        node.pass = step.kind == QStringLiteral("pass") ||
+                    step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false);
+        node.direction = node.pass ? geometry.normal : curveTangentForStep(gate, step);
+        if (!node.pass && step.extra.contains(QStringLiteral("curveTangent")) &&
+            node.direction.lengthSquared() < 1e-8f)
+            result.warnings << QStringLiteral("无效曲线切向提示已忽略，预览按安全连接重新计算。");
+        node.arc =
+            step.extra.value(QStringLiteral("curveMode")).toString() == QStringLiteral("arc-v1");
+        nodes.append(node);
     }
-    if (explicitRoute || points.size() < 3) {
-        if (document.closedLoop && steps.size() > 1 && !points.isEmpty())
-            append(points.first());
-        return points;
+    if (nodes.isEmpty())
+        return result;
+    const bool alreadyClosed =
+        nodes.size() > 2 && (nodes.first().point - nodes.last().point).lengthSquared() < 1e-8f &&
+        QVector3D::dotProduct(nodes.first().direction, nodes.last().direction) > .99f;
+    if (document.closedLoop && nodes.size() > 1 && !alreadyClosed)
+        nodes.append(nodes.first());
+    const bool closed = alreadyClosed || (document.closedLoop && nodes.size() > 1);
+    if (!closed) {
+        if (nodes.first().pass)
+            nodes.prepend({nodes.first().point - nodes.first().direction * .6f,
+                           nodes.first().direction, false, false});
+        if (nodes.last().pass)
+            nodes.append({nodes.last().point + nodes.last().direction * .6f, nodes.last().direction,
+                          false, false});
     }
-    const auto controls = points;
-    points.clear();
-    const qsizetype count = controls.size();
-    const auto at = [&document, &controls, count](qsizetype index) {
-        return controls[document.closedLoop ? (index % count + count) % count
-                                            : std::clamp(index, qsizetype(0), count - 1)];
+    QVector<QVector3D> tangents;
+    QVector<float> factors(nodes.size(), 1);
+    for (qsizetype i = 0; i < nodes.size(); ++i) {
+        const auto before =
+            i > 0 ? nodes[i - 1].point : (closed ? nodes[nodes.size() - 2].point : nodes[i].point);
+        const auto after =
+            i + 1 < nodes.size() ? nodes[i + 1].point : (closed ? nodes[1].point : nodes[i].point);
+        auto direction = nodes[i].direction;
+        if (direction.lengthSquared() < 1e-8f)
+            direction = (after - before).normalized();
+        float length =
+            std::min((nodes[i].point - before).length(), (after - nodes[i].point).length());
+        if (length < 1e-5f)
+            length =
+                std::max((nodes[i].point - before).length(), (after - nodes[i].point).length());
+        tangents.append(direction * length * (nodes[i].arc ? 1.0395661f : .7f));
+    }
+    // Shared node factors retain a common tangent on both sides when handles are shortened.
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        bool changed = false;
+        for (qsizetype i = 1; i < nodes.size(); ++i) {
+            const auto samples =
+                sampleCurve(nodes[i - 1].point, nodes[i].point, tangents[i - 1] * factors[i - 1],
+                            tangents[i] * factors[i]);
+            if (!clearPoints(clearance, samples) && iteration < 4) {
+                factors[i - 1] *= .5f;
+                factors[i] *= .5f;
+                changed = true;
+            }
+        }
+        if (closed) {
+            const float factor = std::min(factors.first(), factors.last());
+            factors.first() = factors.last() = factor;
+        }
+        if (!changed)
+            break;
+    }
+    const auto append = [&result](const QVector3D &point) {
+        if (result.points.isEmpty() || (result.points.last() - point).lengthSquared() > 1e-10f)
+            result.points.append(point);
     };
-    const qsizetype segments = document.closedLoop ? count : count - 1;
-    const int samples = std::clamp(12000 / static_cast<int>(segments), 3, 28);
-    for (qsizetype segment = 0; segment < segments; ++segment) {
-        const auto p0 = at(segment - 1), p1 = at(segment), p2 = at(segment + 1),
-                   p3 = at(segment + 2);
-        for (int j = 0; j < samples; ++j) {
-            const float t = static_cast<float>(j) / samples, t2 = t * t, t3 = t2 * t;
-            append(((p1 * 2) + (p2 - p0) * t + (p0 * 2 - p1 * 5 + p2 * 4 - p3) * t2 +
-                    (-p0 + p1 * 3 - p2 * 3 + p3) * t3) *
-                   .5f);
+    int planned = 0;
+    for (qsizetype i = 1; i < nodes.size(); ++i) {
+        auto samples = sampleCurve(nodes[i - 1].point, nodes[i].point,
+                                   tangents[i - 1] * factors[i - 1], tangents[i] * factors[i]);
+        if (!clearPoints(clearance, samples)) {
+            samples = planned++ < 24
+                          ? detour(clearance, nodes[i - 1].point, nodes[i].point,
+                                   nodes[i - 1].direction.lengthSquared() > 0
+                                       ? nodes[i - 1].direction
+                                       : (nodes[i].point - nodes[i - 1].point).normalized(),
+                                   nodes[i].direction.lengthSquared() > 0
+                                       ? nodes[i].direction
+                                       : (nodes[i].point - nodes[i - 1].point).normalized())
+                          : QVector<QVector3D>();
+            result.smooth = false;
+            if (!samples.isEmpty())
+                result.warnings << QStringLiteral(
+                    "部分连接采用保守净空绕行，局部转角未保证连续切向。");
+        }
+        if (samples.isEmpty()) {
+            result.clearanceSatisfied = false;
+            result.smooth = false;
+            result.warnings << QStringLiteral(
+                "部分窗口或连接无法满足 0.20 m 预览净空，已断开显示，请调整高度或引导点。");
+            if (!result.points.isEmpty() &&
+                (result.breaks.isEmpty() || result.breaks.last() != result.points.size()))
+                result.breaks.append(static_cast<int>(result.points.size()));
+            continue;
+        }
+        if (!result.points.isEmpty() &&
+            (result.points.last() - samples.first()).lengthSquared() > 1e-8f &&
+            (result.breaks.isEmpty() || result.breaks.last() != result.points.size()))
+            result.breaks.append(static_cast<int>(result.points.size()));
+        for (const auto &point : samples)
+            append(point);
+        if (result.points.size() > 200000) {
+            result.clearanceSatisfied = false;
+            result.warnings << QStringLiteral("路线采样达到上限，预览已保留安全前段。");
+            break;
         }
     }
-    append(at(segments));
-    return points;
+    if (nodes.size() == 1 && clearance.segment(nodes[0].point, nodes[0].point))
+        append(nodes[0].point);
+    while (!result.breaks.isEmpty() && result.breaks.last() >= result.points.size())
+        result.breaks.removeLast();
+    result.warnings.removeDuplicates();
+    return result;
+}
+
+QByteArray curveKey(const TrackDocument &document) {
+    QByteArray bytes;
+    QDataStream data(&bytes, QIODevice::WriteOnly);
+    data << document.closedLoop << document.routeStepsDefined << document.gates.size();
+    for (const auto &gate : document.gates) {
+        data << gate.id << gate.type << gate.position << gate.elevation << gate.width << gate.height
+             << gate.yaw;
+        for (const auto &field : {QStringLiteral("frameGeometry"), QStringLiteral("beamThickness"),
+                                  QStringLiteral("beamOverhang"), QStringLiteral("passColumn"),
+                                  QStringLiteral("passLevel"), QStringLiteral("passSide")})
+            data << QJsonDocument(QJsonObject{{field, gate.extra.value(field)}})
+                        .toJson(QJsonDocument::Compact);
+    }
+    data << document.routeSteps.size();
+    for (const auto &step : document.routeSteps) {
+        data << step.id << step.gateId << step.kind << step.face << step.column << step.level
+             << step.reverse << step.localGuide;
+        data << (step.extra.value(QStringLiteral("curveMode")).toString() ==
+                 QStringLiteral("arc-v1"));
+        for (const auto &field : {QStringLiteral("curveTangent"), QStringLiteral("checkpointUp")}) {
+            const auto raw = step.extra.value(field);
+            const auto array = raw.toArray();
+            if (raw.isArray() && array.size() == 3)
+                data << QJsonDocument(array).toJson(QJsonDocument::Compact);
+            else
+                data << QByteArray(raw.isUndefined() ? "absent" : "invalid");
+        }
+        data << step.extra.value(QStringLiteral("raceCheckpoint")).toBool(false)
+             << step.extra.value(QStringLiteral("checkpointWidth")).toDouble(.8)
+             << step.extra.value(QStringLiteral("checkpointHeight")).toDouble(.8);
+    }
+    return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
+}
+} // namespace
+
+double routePreviewClearance() {
+    return kRouteClearance;
+}
+
+RouteCurveResult routeCurve(const TrackDocument &document) {
+    struct Cache {
+        QByteArray key;
+        RouteCurveResult value;
+    };
+    thread_local QVector<Cache> caches;
+    const auto key = curveKey(document);
+    for (qsizetype i = 0; i < caches.size(); ++i)
+        if (caches[i].key == key) {
+            const auto value = caches[i].value;
+            if (i + 1 < caches.size())
+                caches.move(i, caches.size() - 1);
+            return value;
+        }
+    Cache entry;
+    entry.key = key;
+    entry.value = buildConstrainedCurve(document);
+    if (caches.size() >= 6)
+        caches.removeFirst();
+    caches.append(entry);
+    return entry.value;
+}
+
+QVector<QVector3D> routePolyline(const TrackDocument &document) {
+    const auto result = routeCurve(document);
+    return result.breaks.isEmpty() ? result.points : result.points.mid(0, result.breaks.first());
 }
 
 QPainterPath routePath(const TrackDocument &document) {
     QPainterPath path;
     if (document.routeStepsDefined || !document.routeSteps.isEmpty()) {
-        const auto points = routePolyline(document);
+        const auto curve = routeCurve(document);
+        const auto &points = curve.points;
         if (!points.isEmpty()) {
             path.moveTo(points.first().x(), points.first().z());
-            for (qsizetype i = 1; i < points.size(); ++i)
-                path.lineTo(points[i].x(), points[i].z());
+            for (qsizetype i = 1; i < points.size(); ++i) {
+                if (curve.breaks.contains(static_cast<int>(i)))
+                    path.moveTo(points[i].x(), points[i].z());
+                else
+                    path.lineTo(points[i].x(), points[i].z());
+            }
         }
         return path;
     }
@@ -1008,10 +1520,12 @@ QPainterPath routePath(const TrackDocument &document) {
 
 double routeLength(const TrackDocument &document) {
     if (document.routeStepsDefined || !document.routeSteps.isEmpty()) {
-        const auto points = routePolyline(document);
+        const auto curve = routeCurve(document);
+        const auto &points = curve.points;
         double length = 0;
         for (qsizetype i = 1; i < points.size(); ++i)
-            length += (points[i] - points[i - 1]).length();
+            if (!curve.breaks.contains(static_cast<int>(i)))
+                length += (points[i] - points[i - 1]).length();
         return length;
     }
     // Qt integrates cubic segments adaptively; this is geometric path length,

@@ -1,5 +1,6 @@
 #include "recognizer.h"
 #include <QCoreApplication>
+#include <QJsonArray>
 #include <QPainter>
 #include <cmath>
 #include <iostream>
@@ -44,7 +45,8 @@ bool containsNear(const ot::RecognitionResult &result, QPointF originalPixel, do
 
 // An original schematic, not a copy of a user's diagram: navy symbols with
 // magenta overpainting, a separate legend, compound cells and an entry platform.
-QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialTriple = false) {
+QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialTriple = false,
+                    int wrapSide = 0) {
     QImage image(1000, 760, QImage::Format_ARGB32);
     image.fill(Qt::white);
     QPainter painter(&image);
@@ -87,7 +89,12 @@ QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialT
     painter.drawPolygon(sliver);
     frame(course[6]);
     frame(course[7], 2);
-    frame(course[8], 1, 2);
+    if (wrapSide) {
+        const auto p = course[8];
+        painter.drawPolygon(QPolygonF{p + QPointF(-3, 37), p + QPointF(3, -37), p + QPointF(3, 31),
+                                      p + QPointF(-3, 37)});
+    } else
+        frame(course[8], 1, 2);
     cube(course[9]);
     // Legend symbols are visually plausible but disconnected from the course.
     frame(QPointF(75, 180));
@@ -108,8 +115,22 @@ QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialT
             path += QVector<QPointF>{{695, 80}, {430, 80}};
         path +=
             QVector<QPointF>{{430, 120}, {300, 125}, {255, 145}, {250, 175}, {240, 205}, {180, 360},
-                             {250, 540}, {465, 600}, {450, 640}, {435, 600}, {640, 565}, {600, 555},
-                             {640, 535}, {720, 450}, {725, 425}, {750, 395}};
+                             {250, 540}, {465, 600}, {450, 640}, {435, 600}, {640, 565}};
+        if (wrapSide < 0) {
+            path.removeLast();
+            path += QVector<QPointF>{{690, 610}, {680, 565}, {640, 565}};
+        }
+        if (wrapSide) {
+            for (int j = 1; j <= 24; ++j) {
+                const double a = 3.14159265358979323846 * j / 24;
+                // Variable radius makes the source fit observably different
+                // from a canned circle, while reversing side reverses winding.
+                const double radius = 19 + 6 * std::sin(a * .7);
+                path.push_back({640 + wrapSide * radius * std::sin(a), 550 + 15 * std::cos(a)});
+            }
+        } else
+            path += QVector<QPointF>{{600, 555}, {640, 535}};
+        path += QVector<QPointF>{{720, 450}, {725, 425}, {750, 395}};
     }
     line.moveTo(path[0]);
     for (int i = 1; i < path.size(); ++i)
@@ -390,6 +411,69 @@ int main(int argc, char **argv) {
     check(ot::fromJson(ot::toJson(maneuvers.document), &restored, &roundtripError) &&
               restored.routeSteps.size() == maneuvers.document.routeSteps.size(),
           "physical components, repeated passages and guides survive project serialization");
+
+    for (const int side : {-1, 1}) {
+        const auto wrap = ot::recognizeTrack(inkSchematic(true, false, false, side), manual);
+        const ot::Gate *barGate = nullptr;
+        for (const auto &gate : wrap.document.gates)
+            if (gate.extra.value("recognition").toObject().value("wrapWindingInferred").toBool())
+                barGate = &gate;
+        check(barGate != nullptr, "side-view source curve establishes crossbar wrap winding");
+        if (!barGate)
+            continue;
+        const auto action =
+            barGate->extra.value("recognition").toObject().value("barWrap").toObject();
+        check(action.value("axis").toString() == "x" && action.value("winding").toInt() == side,
+              "opposite source lobes give opposite winding in the declared local+X view");
+        check(action.value("sourceCurve").toArray().size() > 10,
+              "original curve evidence survives instead of only keeping a generic waypoint");
+        ot::TrackDocument isolated = wrap.document;
+        isolated.gates = {*barGate};
+        isolated.routeSteps.clear();
+        isolated.closedLoop = false;
+        QVector<ot::RouteStep> passes;
+        for (const auto &step : wrap.document.routeSteps)
+            if (step.gateId == barGate->id) {
+                isolated.routeSteps.push_back(step);
+                if (step.kind == "pass")
+                    passes.push_back(step);
+            }
+        check(passes.size() == 2, "a half-wrap never adds an unseen full-orbit pass");
+        if (passes.size() != 2)
+            continue;
+        const auto fittedCurve = ot::routeCurve(isolated);
+        check(fittedCurve.clearanceSatisfied && fittedCurve.breaks.isEmpty() && fittedCurve.smooth,
+              "inferred bar wrap remains one smooth stroke with actual stock clearance");
+        const auto dense = fittedCurve.points;
+        const auto from = ot::routeStepPosition(isolated, passes.front()),
+                   to = ot::routeStepPosition(isolated, passes.back());
+        int begin = -1, end = -1;
+        for (int i = 0; i < dense.size(); ++i) {
+            if ((dense[i] - from).length() < .0001)
+                begin = i;
+            if ((dense[i] - to).length() < .0001)
+                end = i;
+        }
+        check(begin >= 0 && end > begin, "dense fitted route retains both exact passage centres");
+        const double yaw = barGate->yaw * 3.14159265358979323846 / 180;
+        double sweep = 0, previous = 0, minRadius = 1000;
+        for (int i = begin; i <= end && begin >= 0; ++i) {
+            const auto p =
+                dense[i] - QVector3D(float(barGate->position.x()), float(barGate->elevation),
+                                     float(barGate->position.y()));
+            const double depth = p.x() * std::sin(yaw) + p.z() * std::cos(yaw), up = p.y();
+            const double angle = std::atan2(up, depth);
+            if (i > begin)
+                sweep += std::remainder(angle - previous, 2 * 3.14159265358979323846);
+            previous = angle;
+            minRadius = std::min(minRadius, std::hypot(depth, up));
+        }
+        check(sweep * side > 3.0 && std::abs(sweep) < 3.3,
+              "dense geometry actually winds a signed half-turn around the shared stock");
+        check(minRadius > .70,
+              "fitted curve stays around the stock rather than cutting through it");
+        check(end - begin > 30, "wrap is sampled as a smooth curve between actual passages");
+    }
 
     std::cout << (failures ? "Recognizer tests FAILED\n" : "Recognizer tests passed\n");
     return failures ? 1 : 0;

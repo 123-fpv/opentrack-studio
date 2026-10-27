@@ -55,11 +55,12 @@ class TrackCanvas : public QGraphicsView {
     QGraphicsScene *scene_ = nullptr;
     QGraphicsPathItem *route_ = nullptr;
     QGraphicsEllipseItem *drone_ = nullptr;
-    QPainterPath path_;
+    QPainterPath path_, previewPath_;
     double pathLength_ = 0;
     QTimer timer_;
     QElapsedTimer elapsed_;
     double flightDistance_ = 0, speedKph_ = 70;
+    bool previewHasGap_ = false;
     QString placement_;
     double placeWidth_ = 2.4, placeHeight_ = 2.4;
     bool snap_ = true, routeVisible_ = true, panning_ = false, space_ = false, firstFit_ = true;

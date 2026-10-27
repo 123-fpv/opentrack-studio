@@ -33,7 +33,7 @@ void applyWindowCaption(QWidget &window) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("OpenTrack Studio");
-    app.setApplicationVersion("0.1.4");
+    app.setApplicationVersion("0.1.5");
     app.setOrganizationName("OpenTrackStudio");
     app.setStyle(QStyleFactory::create("Fusion"));
     app.setFont(QFont("Microsoft YaHei UI", 9));
