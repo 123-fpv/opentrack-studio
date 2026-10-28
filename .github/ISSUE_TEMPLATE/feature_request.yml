@@ -1,0 +1,20 @@
+name: Feature / 功能建议
+description: Suggest an improvement / 提出改进建议
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Use case / 使用场景
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: examples
+    attributes:
+      label: Public examples or alternatives / 可公开的例子或替代方案
+      description: Include no API keys, private tracks or proprietary game assets.

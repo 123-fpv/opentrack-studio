@@ -1267,10 +1267,11 @@ bool clearPoints(const CurveClearance &clearance, const QVector<QVector3D> &poin
 }
 
 QVector<QVector3D> detour(const CurveClearance &clearance, const QVector3D &a, const QVector3D &b,
-                          const QVector3D &directionA, const QVector3D &directionB) {
+                          const QVector3D &directionA, const QVector3D &directionB,
+                          float leadLimit) {
     if (!clearance.segment(a, a) || !clearance.segment(b, b))
         return {};
-    const float lead = std::min(.35f, (b - a).length() * .2f);
+    const float lead = std::min(leadLimit, (b - a).length() * .2f);
     const auto start = a + directionA * lead, end = b - directionB * lead;
     if (!clearance.segment(a, start) || !clearance.segment(end, b))
         return {};
@@ -1344,9 +1345,76 @@ QVector<QVector3D> detour(const CurveClearance &clearance, const QVector3D &a, c
     return path;
 }
 
+// Planner vertices only establish a clear corridor; they are not route anchors.
+// Round their corners inside that corridor, leaving every actual endpoint and
+// its approach/departure direction intact. Each accepted cubic is checked as a
+// sampled swept segment against the same inflated stock used by the main path.
+QVector<QVector3D> roundedDetour(const CurveClearance &clearance,
+                                 const QVector<QVector3D> &vertices) {
+    if (vertices.size() < 3)
+        return vertices;
+    QVector<QVector3D> path;
+    for (const auto &point : vertices) {
+        if (!path.isEmpty() && (path.last() - point).lengthSquared() < 1e-10f)
+            continue;
+        while (path.size() > 1) {
+            const auto incoming = (path.last() - path[path.size() - 2]).normalized();
+            const auto outgoing = (point - path.last()).normalized();
+            if (QVector3D::dotProduct(incoming, outgoing) < .99999f ||
+                !clearance.segment(path[path.size() - 2], point))
+                break;
+            path.removeLast();
+        }
+        path.append(point);
+    }
+    if (path.size() < 3)
+        return path;
+    for (const float fraction : {.45f, .32f, .22f, .14f, .08f, .04f}) {
+        QVector<QVector3D> rounded{path.first()};
+        bool valid = true;
+        for (qsizetype i = 1; i + 1 < path.size(); ++i) {
+            const auto incoming = path[i] - path[i - 1], outgoing = path[i + 1] - path[i];
+            const float before = incoming.length(), after = outgoing.length();
+            if (std::min(before, after) < 1e-5f) {
+                valid = false;
+                break;
+            }
+            const auto in = incoming / before, out = outgoing / after;
+            const double cosine = std::clamp(double(QVector3D::dotProduct(in, out)), -1.0, 1.0);
+            // A reversal needs a different corridor, not a zero-radius fillet.
+            if (cosine < -.996) {
+                valid = false;
+                break;
+            }
+            const double angle = std::acos(cosine);
+            const float trim = std::min(2.f, std::min(before, after) * fraction);
+            const auto start = path[i] - in * trim, end = path[i] + out * trim;
+            const float handle = angle < 1e-4
+                                     ? trim * 2
+                                     : float(4 * trim * std::tan(angle / 4) / std::tan(angle / 2));
+            const auto arc = sampleCurve(start, end, in * handle, out * handle);
+            if (!clearance.segment(rounded.last(), start) || !clearPoints(clearance, arc)) {
+                valid = false;
+                break;
+            }
+            if ((rounded.last() - start).lengthSquared() > 1e-10f)
+                rounded.append(start);
+            for (qsizetype j = 1; j < arc.size(); ++j)
+                rounded.append(arc[j]);
+        }
+        if (valid && clearance.segment(rounded.last(), path.last())) {
+            rounded.append(path.last());
+            return rounded;
+        }
+    }
+    return {};
+}
+
 struct CurveNode {
     QVector3D point, direction;
     bool pass = false, arc = false;
+    QString owner;
+    bool inferredGuide = false;
 };
 
 RouteCurveResult buildConstrainedCurve(const TrackDocument &document) {
@@ -1383,6 +1451,9 @@ RouteCurveResult buildConstrainedCurve(const TrackDocument &document) {
             result.warnings << QStringLiteral("无效曲线切向提示已忽略，预览按安全连接重新计算。");
         node.arc =
             step.extra.value(QStringLiteral("curveMode")).toString() == QStringLiteral("arc-v1");
+        node.owner = step.gateId;
+        node.inferredGuide =
+            !node.pass && node.arc && step.extra.value(QStringLiteral("recognition")).isObject();
         nodes.append(node);
     }
     if (nodes.isEmpty())
@@ -1409,6 +1480,26 @@ RouteCurveResult buildConstrainedCurve(const TrackDocument &document) {
         const auto after =
             i + 1 < nodes.size() ? nodes[i + 1].point : (closed ? nodes[1].point : nodes[i].point);
         auto direction = nodes[i].direction;
+        const bool haveBefore = i > 0 || closed, haveAfter = i + 1 < nodes.size() || closed;
+        const auto previousOwner =
+            i > 0 ? nodes[i - 1].owner : (closed ? nodes[nodes.size() - 2].owner : nodes[i].owner);
+        const auto nextOwner =
+            i + 1 < nodes.size() ? nodes[i + 1].owner : (closed ? nodes[1].owner : nodes[i].owner);
+        if (nodes[i].inferredGuide && haveBefore && haveAfter &&
+            (previousOwner != nodes[i].owner || nextOwner != nodes[i].owner)) {
+            // A fitted glyph's end derivative only sees pixels inside that glyph.
+            // At a component boundary it can point away from the next obstacle,
+            // forcing a millimetre-scale reversal before a long connector. Guide
+            // hints are advisory; actual portal/T tangents are never changed here.
+            const auto incoming = (nodes[i].point - before).normalized();
+            const auto outgoing = (after - nodes[i].point).normalized();
+            auto joined = incoming + outgoing;
+            for (int axis = 0; axis < 3; ++axis)
+                if (incoming[axis] * outgoing[axis] <= 0)
+                    joined[axis] = 0;
+            if (joined.lengthSquared() > 1e-8f)
+                direction = joined.normalized();
+        }
         if (direction.lengthSquared() < 1e-8f)
             direction = (after - before).normalized();
         float length =
@@ -1447,19 +1538,50 @@ RouteCurveResult buildConstrainedCurve(const TrackDocument &document) {
         auto samples = sampleCurve(nodes[i - 1].point, nodes[i].point,
                                    tangents[i - 1] * factors[i - 1], tangents[i] * factors[i]);
         if (!clearPoints(clearance, samples)) {
-            samples = planned++ < 24
-                          ? detour(clearance, nodes[i - 1].point, nodes[i].point,
-                                   nodes[i - 1].direction.lengthSquared() > 0
-                                       ? nodes[i - 1].direction
-                                       : (nodes[i].point - nodes[i - 1].point).normalized(),
-                                   nodes[i].direction.lengthSquared() > 0
-                                       ? nodes[i].direction
-                                       : (nodes[i].point - nodes[i - 1].point).normalized())
-                          : QVector<QVector3D>();
-            result.smooth = false;
-            if (!samples.isEmpty())
+            samples.clear();
+            QVector<QVector3D> fallback;
+            if (planned++ < 24) {
+                const auto chord = (nodes[i].point - nodes[i - 1].point).normalized();
+                const auto directionA =
+                    tangents[i - 1].lengthSquared() > 1e-8f ? tangents[i - 1].normalized() : chord;
+                const auto directionB =
+                    tangents[i].lengthSquared() > 1e-8f ? tangents[i].normalized() : chord;
+                const auto reference = detour(clearance, nodes[i - 1].point, nodes[i].point,
+                                              directionA, directionB, .35f);
+                float minimumY = std::min(nodes[i - 1].point.y(), nodes[i].point.y());
+                float maximumY = std::max(nodes[i - 1].point.y(), nodes[i].point.y());
+                for (const auto &point : reference) {
+                    minimumY = std::min(minimumY, point.y());
+                    maximumY = std::max(maximumY, point.y());
+                }
+                for (const float lead : {1.5f, .8f, .35f}) {
+                    const auto corridor = detour(clearance, nodes[i - 1].point, nodes[i].point,
+                                                 directionA, directionB, lead);
+                    if (corridor.isEmpty())
+                        continue;
+                    fallback = corridor;
+                    samples = roundedDetour(clearance, corridor);
+                    // A gentler heading change must not invent a large climb or
+                    // dive. Keep it within one preview radius of the original
+                    // safe connector's vertical envelope.
+                    if (std::any_of(samples.begin(), samples.end(), [&](const QVector3D &point) {
+                            return point.y() < minimumY - kRouteClearance ||
+                                   point.y() > maximumY + kRouteClearance;
+                        }))
+                        samples.clear();
+                    if (!samples.isEmpty())
+                        break;
+                }
+            }
+            if (samples.isEmpty())
+                samples = fallback;
+            else
+                fallback.clear();
+            if (!fallback.isEmpty()) {
+                result.smooth = false;
                 result.warnings << QStringLiteral(
                     "部分连接采用保守净空绕行，局部转角未保证连续切向。");
+            }
         }
         if (samples.isEmpty()) {
             result.clearanceSatisfied = false;
@@ -1509,7 +1631,8 @@ QByteArray curveKey(const TrackDocument &document) {
         data << step.id << step.gateId << step.kind << step.face << step.column << step.level
              << step.reverse << step.localGuide;
         data << (step.extra.value(QStringLiteral("curveMode")).toString() ==
-                 QStringLiteral("arc-v1"));
+                 QStringLiteral("arc-v1"))
+             << step.extra.value(QStringLiteral("recognition")).isObject();
         for (const auto &field : {QStringLiteral("curveTangent"), QStringLiteral("checkpointUp"),
                                   QStringLiteral("flightTangent")}) {
             const auto raw = step.extra.value(field);

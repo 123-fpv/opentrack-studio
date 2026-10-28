@@ -176,6 +176,23 @@ QImage inkSchematic(bool maneuvers = false, bool reversed = false, bool partialT
     }
     return image;
 }
+
+QImage crossingSchematic() {
+    QImage image(1000, 760, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    const QColor ink("#34334d"), magenta("#b42a80");
+    const QVector<QPointF> order{{800, 590}, {200, 150}, {800, 150}, {200, 590}};
+    painter.setPen(QPen(ink, 3));
+    for (const auto &point : order)
+        painter.drawRect(QRectF(point - QPointF(15, 15), QSizeF(30, 30)));
+    painter.fillRect(QRectF(885, 665, 30, 50), ink);
+    painter.setPen(QPen(magenta, 3));
+    painter.drawLine(QPointF(900, 665), order.front());
+    for (int i = 0; i < order.size(); ++i)
+        painter.drawLine(order[i], order[(i + 1) % order.size()]);
+    return image;
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -339,10 +356,14 @@ int main(int argc, char **argv) {
     check(schematic.detectedCount == 10,
           "navy schematic recognizer counts physical obstacles and excludes legend/platform");
     check(schematic.document.extra.value("recognition")
+                      .toObject()
+                      .value("orderHeuristic")
+                      .toString() == "directed-source-trace" &&
+              schematic.document.extra.value("recognition")
                   .toObject()
-                  .value("orderHeuristic")
-                  .toString() == "drawn-route-connectivity",
-          "schematic ordering follows the drawn route rather than a shortest tour");
+                  .value("sourceOrderConfirmed")
+                  .toBool(),
+          "complete directed shaft evidence determines gate order rather than a shortest tour");
     const QStringList expectedTypes{"standard", "standard", "triple", "standard", "cube-stack",
                                     "standard", "standard", "double", "ladder",   "cube"};
     const QVector<QPointF> expectedPixels{{820, 420}, {820, 210}, {660, 120}, {430, 120},
@@ -361,6 +382,19 @@ int main(int argc, char **argv) {
         }
     check(!schematic.warnings.isEmpty(),
           "compound internal passages remain explicitly subject to review");
+    check(schematic.document.closedLoop,
+          "directed first-encounter ordering preserves a source circuit's closing leg");
+
+    const auto crossed = ot::recognizeTrack(crossingSchematic(), manual);
+    const QVector<QPointF> crossingOrder{{800, 590}, {200, 150}, {800, 150}, {200, 590}};
+    check(crossed.detectedCount == crossingOrder.size(),
+          "route crossings are not extra gate symbols");
+    check(!crossed.document.extra.value("recognition")
+                  .toObject()
+                  .value("sourceOrderConfirmed")
+                  .toBool() &&
+              crossed.warnings.join('\n').contains(QStringLiteral("通过顺序")),
+          "an unmarked joined X without direction/overpass evidence is flagged for order review");
 
     const auto passagesFor = [](const ot::TrackDocument &document, const QString &type) {
         QVector<ot::RouteStep> result;

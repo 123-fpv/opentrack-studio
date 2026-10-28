@@ -50,10 +50,16 @@ jobs:
         shell: pwsh
         run: Compress-Archive -LiteralPath dist/OpenTrackStudio-Windows -DestinationPath dist/OpenTrackStudio-Windows-x64.zip
 
+      - name: Archive corresponding application source
+        shell: pwsh
+        run: git archive --format=zip --prefix=OpenTrackStudio-source/ HEAD -o dist/OpenTrackStudio-source.zip
+
       - name: Upload portable ZIP
         uses: actions/upload-artifact@v4
         with:
           name: OpenTrackStudio-Windows-x64
-          path: dist/OpenTrackStudio-Windows-x64.zip
+          path: |
+            dist/OpenTrackStudio-Windows-x64.zip
+            dist/OpenTrackStudio-source.zip
           if-no-files-found: error
           retention-days: 14

@@ -450,11 +450,110 @@ int main(int argc, char **argv) {
     freeB.localGuide = {3, 1.6f, 1};
     blocked.routeSteps = {freeA, freeB};
     const auto detoured = ot::routeCurve(blocked);
-    require(
-        detoured.clearanceSatisfied && detoured.breaks.isEmpty() && !detoured.smooth &&
-            !detoured.warnings.isEmpty() && detoured.points.size() > 2,
-        "blocked arbitrary join gets a bounded safe detour with an honest smoothness diagnostic");
+    require(detoured.clearanceSatisfied && detoured.breaks.isEmpty() && detoured.smooth &&
+                detoured.warnings.isEmpty() && detoured.points.size() > 10,
+            "blocked arbitrary join rounds the bounded clear corridor instead of exposing polygon "
+            "corners");
     denseClearance(blocked, detoured);
+    for (const auto &point : detoured.points)
+        require(std::abs(point.y() - freeA.localGuide.y()) <= .2f,
+                "rounding a flat obstacle bypass does not invent an unrelated climb or dive");
+    require(close(detoured.points.first(), freeA.localGuide) &&
+                close(detoured.points.last(), freeB.localGuide),
+            "rounding planner corners does not move actual guide endpoints");
+    double largestCorner = 0;
+    for (qsizetype i = 1; i + 1 < detoured.points.size(); ++i) {
+        const auto before = detoured.points[i] - detoured.points[i - 1];
+        const auto after = detoured.points[i + 1] - detoured.points[i];
+        if (before.lengthSquared() > 1e-10f && after.lengthSquared() > 1e-10f)
+            largestCorner =
+                std::max(largestCorner,
+                         std::acos(std::clamp(
+                             double(QVector3D::dotProduct(before.normalized(), after.normalized())),
+                             -1., 1.)));
+    }
+    require(largestCorner < .35,
+            "rounded obstacle bypass has no sharp jump between its rendered segments");
+    const auto approach = (freeB.localGuide - freeA.localGuide).normalized();
+    require(
+        QVector3D::dotProduct((detoured.points[1] - detoured.points[0]).normalized(), approach) >
+                .999f &&
+            QVector3D::dotProduct(
+                (detoured.points.last() - detoured.points[detoured.points.size() - 2]).normalized(),
+                approach) > .999f,
+        "safe detour preserves the shared endpoint approach and departure tangents");
+    ot::TrackDocument componentJoin;
+    componentJoin.closedLoop = false;
+    componentJoin.routeStepsDefined = true;
+    componentJoin.gates = {ot::makeGate(), ot::makeGate()};
+    componentJoin.gates[0].position = {-6, 0};
+    componentJoin.gates[1].position = {6, 0};
+    const auto fittedGuide = [&](int owner, QVector3D position, QVector3D tangent) {
+        ot::RouteStep step;
+        step.id = ot::newGateId();
+        step.kind = "guide";
+        step.gateId = componentJoin.gates[owner].id;
+        step.localGuide = (position - QVector3D(owner ? 6.f : -6.f, 1.6f, 0)) / 1.5f;
+        step.extra.insert("curveMode", "arc-v1");
+        step.extra.insert("curveTangent", QJsonArray{tangent.x(), tangent.y(), tangent.z()});
+        return step;
+    };
+    auto sourceBefore = fittedGuide(0, {-3, 1, -1}, {.5f, -.65f, -.2f});
+    auto sourceEnd = fittedGuide(0, {-2.5f, .35f, -1.2f}, {-1, 0, -1});
+    auto nextComponent = fittedGuide(1, {3, 1, 3}, {5.5f, .65f, 4.2f});
+    sourceEnd.extra.insert("recognition", QJsonObject{{"source", "synthetic-glyph-trace"}});
+    componentJoin.routeSteps = {sourceBefore, sourceEnd, nextComponent};
+    const auto outgoingAt = [&](const ot::TrackDocument &track, const ot::RouteStep &step) {
+        const auto crossing = ot::routeStepGeometry(track, step).pathPosition;
+        const auto curve = ot::routeCurve(track);
+        for (qsizetype i = 0; i + 1 < curve.points.size(); ++i)
+            if (close(curve.points[i], crossing))
+                return (curve.points[i + 1] - curve.points[i]).normalized();
+        return QVector3D();
+    };
+    require(outgoingAt(componentJoin, sourceEnd).x() > .995f,
+            "recognized component-end guide uses the next component and local extrema instead "
+            "of reversing along an intra-glyph derivative");
+    denseClearance(componentJoin, ot::routeCurve(componentJoin));
+    auto manualJoin = componentJoin;
+    manualJoin.routeSteps[1].extra.remove("recognition");
+    const auto manualDirection =
+        ot::routeStepGeometry(manualJoin, manualJoin.routeSteps[1]).pathTangent;
+    require(QVector3D::dotProduct(outgoingAt(manualJoin, manualJoin.routeSteps[1]),
+                                  manualDirection) > .99f,
+            "ordinary manual guide headings remain intentional and cached provenance is distinct");
+    auto protectedJoin = componentJoin;
+    protectedJoin.routeSteps[1].extra.insert("raceCheckpoint", true);
+    const auto protectedDirection =
+        ot::routeStepGeometry(protectedJoin, protectedJoin.routeSteps[1]).pathTangent;
+    require(QVector3D::dotProduct(outgoingAt(protectedJoin, protectedJoin.routeSteps[1]),
+                                  protectedDirection) > .99f,
+            "an explicit T checkpoint keeps its accepted heading at a component boundary");
+    auto protectedPass = componentJoin;
+    auto physicalPass = pass(protectedPass.gates[0]);
+    physicalPass.extra.insert("curveMode", "arc-v1");
+    physicalPass.extra.insert("recognition", QJsonObject{{"source", "synthetic-glyph-trace"}});
+    protectedPass.routeSteps[1] = physicalPass;
+    require(QVector3D::dotProduct(outgoingAt(protectedPass, physicalPass),
+                                  ot::routeStepGeometry(protectedPass, physicalPass).pathTangent) >
+                .99f,
+            "an actual aperture crossing never blends away its required entry direction");
+    ot::TrackDocument roofApproach;
+    roofApproach.closedLoop = false;
+    roofApproach.routeStepsDefined = true;
+    roofApproach.gates = {ot::makeGate("cube")};
+    auto approachGuide = freeA;
+    approachGuide.id = ot::newGateId();
+    approachGuide.localGuide = {-10, 1.6f, 0};
+    approachGuide.extra.insert("curveTangent", QJsonArray{1, 0, 0});
+    roofApproach.routeSteps = {approachGuide, pass(roofApproach.gates[0], 0, 0, "top")};
+    const auto roofCurve = ot::routeCurve(roofApproach);
+    require(roofCurve.clearanceSatisfied && roofCurve.breaks.isEmpty(),
+            "a lateral approach reaches the roof portal without crossing its edge beams");
+    denseClearance(roofApproach, roofCurve);
+    for (const auto &point : roofCurve.points)
+        require(point.y() <= 3.66f,
+                "roof entry smoothing stays near the roof instead of adding a high arch");
     blocked.gates.clear();
     blocked.routeSteps.clear();
     for (const auto &point :

@@ -2,6 +2,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QQuaternion>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -544,6 +545,180 @@ struct WindowVisit {
     bool interrupted = false;
 };
 
+// Fit the centre of a raster stroke without treating its one-pixel staircase as
+// a flight manoeuvre. Arc distance, rather than pixel index, supplies the fit's
+// parameter. Semantic crossings are still located on the original trace below.
+class StrokeCentreline {
+    QVector<QPointF> points_;
+    double maximumShift_ = 0;
+
+  public:
+    StrokeCentreline(const PrintedTrace &trace, double cell) : points_(trace.points) {
+        if (points_.size() < 5)
+            return;
+        QVector<double> distances(points_.size());
+        for (qsizetype i = 1; i < points_.size(); ++i)
+            distances[i] =
+                distances[i - 1] + std::sqrt(squaredDistance(trace.points[i], trace.points[i - 1]));
+        const double radius = std::max(2., cell * .15), cap = cell * .025;
+        int first = 0, last = 0;
+        for (int i = 1; i + 1 < points_.size(); ++i) {
+            while (first < i && distances[i] - distances[first] > radius)
+                ++first;
+            last = std::max(last, i);
+            while (last + 1 < points_.size() && distances[last + 1] - distances[i] <= radius)
+                ++last;
+            if (last - first < 3)
+                continue;
+            double matrix[3][5]{};
+            for (int j = first; j <= last; ++j) {
+                const double t = (distances[j] - distances[i]) / radius;
+                const double powers[5]{1, t, t * t, t * t * t, t * t * t * t};
+                const double weight = std::exp(-2 * t * t);
+                for (int r = 0; r < 3; ++r) {
+                    for (int c = 0; c < 3; ++c)
+                        matrix[r][c] += weight * powers[r + c];
+                    matrix[r][3] += weight * powers[r] * trace.points[j].x();
+                    matrix[r][4] += weight * powers[r] * trace.points[j].y();
+                }
+            }
+            bool valid = true;
+            for (int column = 0; column < 3; ++column) {
+                int pivot = column;
+                for (int row = column + 1; row < 3; ++row)
+                    if (std::abs(matrix[row][column]) > std::abs(matrix[pivot][column]))
+                        pivot = row;
+                if (std::abs(matrix[pivot][column]) < 1e-10) {
+                    valid = false;
+                    break;
+                }
+                for (int c = column; c < 5; ++c)
+                    std::swap(matrix[column][c], matrix[pivot][c]);
+                const double divisor = matrix[column][column];
+                for (int c = column; c < 5; ++c)
+                    matrix[column][c] /= divisor;
+                for (int row = 0; row < 3; ++row) {
+                    if (row == column)
+                        continue;
+                    const double factor = matrix[row][column];
+                    for (int c = column; c < 5; ++c)
+                        matrix[row][c] -= factor * matrix[column][c];
+                }
+            }
+            if (!valid)
+                continue;
+            auto displacement = QPointF(matrix[0][3], matrix[0][4]) - trace.points[i];
+            const double distance = std::hypot(displacement.x(), displacement.y());
+            if (distance > cap)
+                displacement *= cap / distance;
+            points_[i] += displacement;
+            maximumShift_ = std::max(maximumShift_, std::min(distance, cap));
+        }
+    }
+    QPointF at(double index) const {
+        const double bounded = std::clamp(index, 0., double(points_.size() - 1));
+        const int first = int(bounded), last = std::min(first + 1, int(points_.size()) - 1);
+        return points_[first] * (1 - (bounded - first)) + points_[last] * (bounded - first);
+    }
+    QJsonObject evidence(double cell) const {
+        return {{"method", "bounded-quadratic-centreline-v1"},
+                {"maximumPixelShift", maximumShift_},
+                {"pixelShiftLimit", cell * .025},
+                {"preservesSemanticCrossings", true},
+                {"preservesEssentialChecks", true}};
+    }
+};
+
+// Raster noise and the ground clamp can leave millimetre-scale reversals in an
+// otherwise smooth inferred turn. Fair ordinary guides only. Physical portal
+// crossings and the explicitly exported side checks are immutable constraints.
+void refineFittedStroke(const Gate &gate, QVector<RouteStep> *steps, QJsonObject *evidence) {
+    if (steps->size() < 4)
+        return;
+    TrackDocument document;
+    document.gates = {gate};
+    document.closedLoop = false;
+    document.routeStepsDefined = true;
+    document.routeSteps = *steps;
+    QVector<RouteStep> candidate = *steps;
+    const auto position = [&](const RouteStep &step) {
+        return routeStepGeometry(document, step).pathPosition;
+    };
+    const auto fixed = [](const RouteStep &step) {
+        return step.kind != "guide" || step.extra.value("raceCheckpoint").toBool();
+    };
+    int removed = 0;
+    for (int i = 1; i + 1 < candidate.size();) {
+        if (!fixed(candidate[i]) &&
+            std::min((position(candidate[i]) - position(candidate[i - 1])).length(),
+                     (position(candidate[i + 1]) - position(candidate[i])).length()) < .14f) {
+            candidate.removeAt(i);
+            ++removed;
+        } else
+            ++i;
+    }
+    const auto m = gateFrameMetrics(gate);
+    const QVector3D scale(float(m.columns * gate.width / 2), float(m.levels * gate.height / 2),
+                          float(gate.width / 2));
+    const auto inverse = QQuaternion::fromAxisAndAngle(0, 1, 0, float(gate.yaw)).conjugated();
+    for (int i = 1; i + 1 < candidate.size(); ++i) {
+        if (fixed(candidate[i]))
+            continue;
+        const auto incoming = (position(candidate[i]) - position(candidate[i - 1])).normalized();
+        const auto outgoing = (position(candidate[i + 1]) - position(candidate[i])).normalized();
+        const auto direction = (incoming + outgoing).normalized();
+        if (direction.lengthSquared() < .01f)
+            continue;
+        const auto tangent = (inverse.rotatedVector(direction) / scale).normalized();
+        candidate[i].extra.insert("curveTangent",
+                                  QJsonArray{tangent.x(), tangent.y(), tangent.z()});
+    }
+    // Essential outside-bar checks retain the turn's homotopy. In addition,
+    // ensure each documented signed turn remains unchanged by guide removal.
+    const auto turns = evidence->value("progressiveTurns").toArray();
+    const auto winding = [&](const QVector<RouteStep> &route, const QJsonObject &turn) {
+        const int firstPass = turn.value("fromComponentPass").toInt(1),
+                  lastPass = turn.value("toComponentPass").toInt(2);
+        const double barX = turn.value("barX").toDouble();
+        int pass = 0;
+        bool begun = false;
+        double previous = 0, sweep = 0;
+        for (const auto &step : route) {
+            if (step.kind == "pass")
+                ++pass;
+            if (pass < firstPass)
+                continue;
+            auto p = inverse.rotatedVector(position(step) - QVector3D(float(gate.position.x()),
+                                                                      float(gate.elevation),
+                                                                      float(gate.position.y())));
+            const double angle = std::atan2(p.z(), p.x() - barX);
+            if (begun)
+                sweep += std::remainder(angle - previous, 2 * Pi);
+            previous = angle;
+            begun = true;
+            if (pass == lastPass && step.kind == "pass")
+                break;
+        }
+        return sweep;
+    };
+    bool topology = true;
+    for (const auto &value : turns) {
+        const auto turn = value.toObject();
+        topology &= std::abs(winding(candidate, turn) - winding(*steps, turn)) < Pi / 36;
+    }
+    document.routeSteps = candidate;
+    const auto curve = topology ? routeCurve(document) : RouteCurveResult();
+    if (topology && curve.clearanceSatisfied && curve.smooth && curve.breaks.isEmpty()) {
+        *steps = candidate;
+        evidence->insert("guideFairing", QJsonObject{{"method", "semantic-anchor-preserving-v1"},
+                                                     {"removedRedundantGuides", removed},
+                                                     {"sourceCrossingsPreserved", true},
+                                                     {"essentialChecksPreserved", true},
+                                                     {"windingPreserved", true},
+                                                     {"clearanceVerified", true}});
+    }
+}
+
 // A side-on drawing establishes a height/depth cross-section. Front-facing
 // symbols do not: their screen-space loop can be an elevation change or a
 // projected turn around an upright. Preserve those samples as evidence, but do
@@ -743,10 +918,12 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
                           float(gate.width / 2));
     const double horizontalSign = std::cos(qDegreesToRadians(gate.yaw)) < 0 ? -1 : 1;
     const double depth = gate.width * .34;
+    const StrokeCentreline centreline(trace, cell);
+    const double tangentSpan = std::max(3., cell * .12);
     const auto eventIndex = [&](int i) { return (events[i].first + events[i].last) / 2; };
-    const auto localAt = [&](double index) {
+    const auto localAt = [&](double index, bool denoise = false) {
         const int at = std::clamp(int(index), 0, int(trace.points.size()) - 1);
-        const auto p = trace.points[at];
+        const auto p = denoise ? centreline.at(index) : trace.points[at];
         double z = events.front().far ? depth : -depth;
         for (int j = 1; j < events.size(); ++j) {
             if (index < eventIndex(j - 1))
@@ -797,7 +974,9 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
         pass.face = events[j - 1].far ? QStringLiteral("back") : QStringLiteral("front");
         pass.extra.insert("apertureU", pass.face == "back" ? -u : u);
         pass.extra.insert("apertureV", v);
-        const auto tangent = ((localAt(index + 3) - localAt(index - 3)) / scale).normalized();
+        const auto tangent =
+            ((localAt(index + tangentSpan, true) - localAt(index - tangentSpan, true)) / scale)
+                .normalized();
         pass.extra.insert("flightTangent", QJsonArray{tangent.x(), tangent.y(), tangent.z()});
         pass.extra.insert("curveMode", "arc-v1");
         p = QVector3D(float(cx + u * m.openingWidth / 2), float(cy + v * m.openingHeight / 2), 0);
@@ -820,8 +999,10 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
         guide.id = newGateId();
         guide.gateId = gate.id;
         guide.kind = "guide";
-        guide.localGuide = localAt(index) / scale;
-        const auto tangent = ((localAt(index + 2) - localAt(index - 2)) / scale).normalized();
+        guide.localGuide = localAt(index, true) / scale;
+        const auto tangent =
+            ((localAt(index + tangentSpan, true) - localAt(index - tangentSpan, true)) / scale)
+                .normalized();
         if (tangent.lengthSquared() < .01f)
             return;
         guide.extra.insert("curveMode", "arc-v1");
@@ -886,6 +1067,9 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
         }
         QJsonObject action{{"type", "progressive-bar-wrap"},
                            {"axis", upright ? "y" : "x"},
+                           {"barX", barX},
+                           {"fromComponentPass", j},
+                           {"toComponentPass", j + 1},
                            {"signedSweepDegrees", qRadiansToDegrees(sweep)},
                            {"axialProgress", b.point.y() - a.point.y()},
                            {"view", "along-local+Y; +X right; +Z up"},
@@ -893,6 +1077,13 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
                            {"depthEstimated", true}};
         transitions.push_back(action);
         if (essential >= 0) {
+            // A native side check remains the same semantic constraint after
+            // stroke fairing; only ordinary visual guides are allowed to move.
+            const int index = sourceIndices[essential];
+            fitted[essential].localGuide = localAt(index) / scale;
+            const auto tangent = ((localAt(index + 2) - localAt(index - 2)) / scale).normalized();
+            fitted[essential].extra.insert("curveTangent",
+                                           QJsonArray{tangent.x(), tangent.y(), tangent.z()});
             fitted[essential].extra.insert("raceCheckpoint", true);
             fitted[essential].extra.insert("checkpointWidth", .8);
             fitted[essential].extra.insert("checkpointHeight", .8);
@@ -904,6 +1095,7 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
                                                      {"requiresReview", true},
                                                      {"depthEstimated", true}});
     evidence->insert("occlusionFit", true);
+    evidence->insert("sourceCurveFit", centreline.evidence(cell));
     evidence->insert("occlusionEvents", sourceEvents);
     evidence->insert("sourceCurve3D", sourceSamples);
     evidence->insert("progressiveTurns", transitions);
@@ -912,6 +1104,7 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
     evidence->insert("clearanceAdjusted", adjusted);
     evidence->insert("depthEstimated", true);
     evidence->insert("maneuverPattern", "source-progressive-wrap");
+    refineFittedStroke(gate, &fitted, evidence);
     *steps = fitted;
     return true;
 }
@@ -975,15 +1168,21 @@ bool fitSideUprightStroke(const Gate &gate, const DiagramNode &node, const Print
     const QVector3D scale(float(m.columns * gate.width / 2), float(m.levels * gate.height / 2),
                           float(gate.width / 2));
     const double barX = -gate.width / 2, radius = gate.width / 2;
-    const auto localAt = [&](int index) {
-        index = std::clamp(index, first, last);
-        const double z = depths[index - first];
+    const StrokeCentreline centreline(trace, cell);
+    const double tangentSpan = std::max(3., cell * .12);
+    const auto localAt = [&](double index, bool denoise = false) {
+        index = std::clamp(index, double(first), double(last));
+        const int at = int(index), next = std::min(at + 1, last);
+        const double fraction = index - at;
+        const double z = depths[at - first] * (1 - fraction) + depths[next - first] * fraction;
         const double normalized = z / (z >= 0 ? positive : -negative);
         const double branch = index < peak1 || index > peak2 ? 1 : -1;
         const double x =
             barX + branch * radius * std::sqrt(std::max(0.0, 1 - normalized * normalized));
-        const double y =
-            (box.center().y() - trace.points[index].y()) * gate.height * m.levels / box.height();
+        const auto pixel = denoise
+                               ? centreline.at(index)
+                               : trace.points[at] * (1 - fraction) + trace.points[next] * fraction;
+        const double y = (box.center().y() - pixel.y()) * gate.height * m.levels / box.height();
         return QVector3D(float(x), float(y), float(z));
     };
     QVector<RouteStep> fitted;
@@ -994,11 +1193,12 @@ bool fitSideUprightStroke(const Gate &gate, const DiagramNode &node, const Print
     for (int i = first; i <= last; ++i) {
         if (i != first && i != last && (i - first) % spacing != 0)
             continue;
-        const auto p = localAt(i);
+        const auto p = localAt(i, i != first && i != last);
         RouteStep step;
         step.id = newGateId();
         step.gateId = gate.id;
-        auto tangent = ((localAt(i + 2) - localAt(i - 2)) / scale).normalized();
+        auto tangent = ((localAt(i + tangentSpan, true) - localAt(i - tangentSpan, true)) / scale)
+                           .normalized();
         if (i == first || i == last) {
             step.level = i == first ? visits[0].level : visits[1].level;
             step.face = winding > 0 ? "front" : "back";
@@ -1030,18 +1230,29 @@ bool fitSideUprightStroke(const Gate &gate, const DiagramNode &node, const Print
     }
     QJsonObject action{{"type", "progressive-upright-wrap"},
                        {"axis", "y"},
+                       {"barX", barX},
+                       {"fromComponentPass", 1},
+                       {"toComponentPass", 2},
                        {"signedSweepDegrees", qRadiansToDegrees(sweep)},
                        {"axialProgress", localAt(last).y() - localAt(first).y()},
                        {"view", "along-local+Y; +X right; +Z up"},
                        {"alongBarExtentInferred", true},
                        {"sameApertureReturn", false}};
     if (essential >= 0) {
+        // Keep the outside-post check's position and accepted direction stable.
+        // Its source index is recoverable from this fixed-spacing sample list.
+        const int index = first + essential * spacing;
+        fitted[essential].localGuide = localAt(index) / scale;
+        const auto tangent = ((localAt(index + 2) - localAt(index - 2)) / scale).normalized();
+        fitted[essential].extra.insert("curveTangent",
+                                       QJsonArray{tangent.x(), tangent.y(), tangent.z()});
         fitted[essential].extra.insert("raceCheckpoint", true);
         fitted[essential].extra.insert("checkpointWidth", .8);
         fitted[essential].extra.insert("checkpointHeight", .8);
         fitted[essential].extra.insert("maneuver", action);
     }
     evidence->insert("sourceCurve3D", samples);
+    evidence->insert("sourceCurveFit", centreline.evidence(cell));
     evidence->insert("progressiveTurns", QJsonArray{action});
     evidence->insert("occlusionFit", true);
     evidence->insert("alongBarExtentInferred", true);
@@ -1049,6 +1260,7 @@ bool fitSideUprightStroke(const Gate &gate, const DiagramNode &node, const Print
     evidence->insert("passageAmbiguous", true);
     evidence->insert("manualOrbitChoiceRequired", false);
     evidence->insert("maneuverPattern", "source-progressive-upright");
+    refineFittedStroke(gate, &fitted, evidence);
     *steps = fitted;
     return true;
 }
@@ -1657,6 +1869,48 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     }
     const auto trace = tracePrintedLine(route, width, height, dark, field, nodes, cellPixels,
                                         startReference, boxCenter(nodes[size_t(start)].shape));
+    // Connectivity alone cannot decide which branch of a crossing is visited
+    // first. When the directed shaft walk covers every symbol, use its actual
+    // first encounters instead of a greedy tour through the adjacency graph.
+    QVector<int> traceFirst(count, -1), encounters;
+    for (int i = 0; i < trace.points.size(); ++i) {
+        int nearest = -1;
+        double nearestDistance = std::numeric_limits<double>::infinity();
+        for (int n = 0; n < count; ++n) {
+            const QRectF box(blobBounds(nodes[size_t(n)].shape));
+            const auto core = box.adjusted(box.width() * .16, box.height() * .16,
+                                           -box.width() * .16, -box.height() * .16);
+            if (core.contains(trace.points[i])) {
+                if (traceFirst[n] < 0)
+                    traceFirst[n] = i;
+                const double distance = squaredDistance(trace.points[i], box.center());
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearest = n;
+                }
+            }
+        }
+        if (nearest >= 0 && (encounters.isEmpty() || encounters.last() != nearest))
+            encounters.append(nearest);
+    }
+    std::set<int> uniqueEncounters;
+    bool interleavedRevisit = false;
+    for (int i = 0; i < encounters.size(); ++i) {
+        if (i + 1 == encounters.size() && i > 0 && encounters[i] == encounters.first())
+            continue;
+        interleavedRevisit |= !uniqueEncounters.insert(encounters[i]).second;
+    }
+    const bool tracedOrder =
+        startKnown && !interleavedRevisit && !trace.ambiguous && trace.coverage >= .90 &&
+        std::all_of(traceFirst.begin(), traceFirst.end(), [](int index) { return index >= 0; });
+    if (tracedOrder)
+        std::stable_sort(order.begin(), order.end(),
+                         [&](int a, int b) { return traceFirst[a] < traceFirst[b]; });
+    const bool tracedCycle =
+        tracedOrder && encounters.size() > 1 && encounters.first() == encounters.last();
+    // A traced lap may stop on the start frame's boundary before reaching its
+    // inner core again. Do not discard an existing, fully connected graph cycle.
+    document.closedLoop = cycle || tracedCycle;
     document.routeSteps.clear();
     document.routeStepsDefined = true;
     int ambiguousPassages = 0;
@@ -1667,8 +1921,8 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         const auto pixel = boxCenter(node.shape);
         gate.position = document.backgroundOrigin +
                         QPointF(pixel.x() * sx, pixel.y() * sy) * document.metersPerPixel;
-        const int before = i > 0 ? i - 1 : (cycle ? count - 1 : i);
-        const int after = i + 1 < count ? i + 1 : (cycle ? 0 : i);
+        const int before = i > 0 ? i - 1 : (document.closedLoop ? count - 1 : i);
+        const int after = i + 1 < count ? i + 1 : (document.closedLoop ? 0 : i);
         const auto direction = boxCenter(nodes[size_t(order[size_t(after)])].shape) -
                                boxCenter(nodes[size_t(order[size_t(before)])].shape);
         // The diagram's front-facing/edge-on symbol axis supplies orientation;
@@ -1683,14 +1937,45 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
                         {QStringLiteral("heightInferred"), true},
                         {QStringLiteral("directionInferred"), true},
                         {QStringLiteral("typeInferred"), true},
+                        {QStringLiteral("sourceOrdinal"), i + 1},
+                        {QStringLiteral("sourceTraceFirstIndex"), traceFirst[order[size_t(i)]]},
+                        {QStringLiteral("sourceOrderConfirmed"), tracedOrder},
                         {QStringLiteral("compoundPassesNeedReview"),
                          node.type != QStringLiteral("standard")},
                         {QStringLiteral("pixelBounds"),
                          QJsonArray{node.shape.left * sx, node.shape.top * sy,
                                     node.shape.width() * sx, node.shape.height() * sy}}});
         compounds += node.type != QStringLiteral("standard");
-        document.routeSteps +=
+        auto componentSteps =
             traceComponentPasses(gate, node, trace, cellPixels, &ambiguousPassages);
+        QJsonObject passage;
+        int componentPasses = 0;
+        for (auto &step : componentSteps) {
+            if (step.kind != "pass")
+                continue;
+            const bool volume = gateFrameMetrics(gate).centerDepth > 0;
+            const QString entry =
+                volume ? (step.reverse ? QString("inside") : step.face)
+                       : (((step.face == "back") != step.reverse) ? "back" : "front");
+            const QString exit = volume ? (step.reverse ? step.face : QString("inside"))
+                                        : (entry == "front" ? "back" : "front");
+            auto provenance = step.extra.value("recognition").toObject();
+            provenance.insert("sourceOrdinal", i + 1);
+            provenance.insert("componentPass", ++componentPasses);
+            provenance.insert("entrySide", entry);
+            provenance.insert("exitSide", exit);
+            provenance.insert("sourceOrderConfirmed", tracedOrder);
+            step.extra.insert("recognition", provenance);
+            if (componentPasses == 1)
+                passage.insert("entrySide", entry);
+            passage.insert("exitSide", exit);
+        }
+        passage.insert("passCount", componentPasses);
+        auto componentEvidence = gate.extra.value("recognition").toObject();
+        passage.insert("turns", componentEvidence.value("progressiveTurns").toArray());
+        componentEvidence.insert("passage", passage);
+        gate.extra.insert("recognition", componentEvidence);
+        document.routeSteps += componentSteps;
         const auto routeEvidence = gate.extra.value(QStringLiteral("recognition")).toObject();
         fittedWraps += routeEvidence.value(QStringLiteral("wrapWindingInferred")).toBool();
         manualOrbitGroups +=
@@ -1702,9 +1987,13 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     document.extra.insert(
         QStringLiteral("recognition"),
         QJsonObject{{QStringLiteral("method"), QStringLiteral("local-ink-route-v2")},
-                    {QStringLiteral("orderHeuristic"), QStringLiteral("drawn-route-connectivity")},
+                    {QStringLiteral("orderHeuristic"),
+                     tracedOrder ? QStringLiteral("directed-source-trace")
+                                 : QStringLiteral("drawn-route-connectivity")},
+                    {QStringLiteral("sourceOrderConfirmed"), tracedOrder},
+                    {QStringLiteral("interleavedRevisitRequiresReview"), interleavedRevisit},
                     {QStringLiteral("startDetectedFromPlatform"), startKnown},
-                    {QStringLiteral("routeGraphConnected"), connected},
+                    {QStringLiteral("routeGraphConnected"), connected || tracedOrder},
                     {QStringLiteral("routeTraceCoverage"), trace.coverage},
                     {QStringLiteral("routeTracePoints"), trace.points.size()},
                     {QStringLiteral("routeOcclusionBridges"), trace.occlusions},
@@ -1723,7 +2012,7 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
             "比例尺按单门图示中心距 3 米估算，图示含透视符号，请校对真实尺寸。");
     if (!startKnown)
         result.warnings << QStringLiteral("无法可靠确认起飞点，请手动确认起点和飞行方向。");
-    if (!connected || ambiguousJunction)
+    if ((!connected || ambiguousJunction || interleavedRevisit) && !tracedOrder)
         result.warnings << QStringLiteral(
             "部分路线连接或交叉关系不明确，未使用最短巡回代替原路线，请检查通过顺序。");
     if (compounds)

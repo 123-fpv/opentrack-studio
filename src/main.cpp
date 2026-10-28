@@ -1,6 +1,9 @@
+#include "language.h"
 #include "window.h"
 #include <QApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QIcon>
 #include <QLibrary>
 #include <QListWidget>
@@ -33,7 +36,7 @@ void applyWindowCaption(QWidget &window) {
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
     app.setApplicationName("OpenTrack Studio");
-    app.setApplicationVersion("0.1.6");
+    app.setApplicationVersion("0.1.7");
     app.setOrganizationName("OpenTrackStudio");
     app.setStyle(QStyleFactory::create("Fusion"));
     app.setFont(QFont("Microsoft YaHei UI", 9));
@@ -47,9 +50,35 @@ int main(int argc, char **argv) {
     QFile theme(":/theme/studio.qss");
     if (theme.open(QIODevice::ReadOnly))
         app.setStyleSheet(QString::fromUtf8(theme.readAll()));
-    const QStringList args = app.arguments();
+    QStringList args = app.arguments();
+    // Automated runs use their own INI settings, never the user's saved locale.
+    for (const auto &mode :
+         {QString("--smoke-test"), QString("--language-smoke-test"), QString("--render-demo")}) {
+        const int at = args.indexOf(mode);
+        if (at < 0 || at + 1 >= args.size())
+            continue;
+        const QString output = mode == "--render-demo" ? QFileInfo(args[at + 1]).absolutePath()
+                                                       : QFileInfo(args[at + 1]).absoluteFilePath();
+        QDir().mkpath(output + "/settings");
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, output + "/settings");
+        break;
+    }
+    ot::i18n::initialize();
+    for (int i = 1; i < args.size();) {
+        if (args[i] == "--lang" && i + 1 < args.size()) {
+            ot::i18n::setLanguage(args[i + 1]);
+            args.removeAt(i);
+            args.removeAt(i);
+        } else if (args[i].startsWith("--lang=")) {
+            ot::i18n::setLanguage(args[i].mid(7));
+            args.removeAt(i);
+        } else
+            ++i;
+    }
     ot::StudioWindow window;
-    if (args.size() >= 3 && (args[1] == "--render-demo" || args[1] == "--smoke-test")) {
+    if (args.size() >= 3 && (args[1] == "--render-demo" || args[1] == "--smoke-test" ||
+                             args[1] == "--language-smoke-test")) {
         // Automated screenshots must not take keyboard focus from another app.
         window.setAttribute(Qt::WA_ShowWithoutActivating);
         for (auto *screen : app.screens())
@@ -64,7 +93,12 @@ int main(int argc, char **argv) {
     window.show();
     applyWindowCaption(window);
     int result = 0;
-    if (args.size() >= 3 && args[1] == "--smoke-test") {
+    if (args.size() >= 3 && args[1] == "--language-smoke-test") {
+        QTimer::singleShot(200, &window, [&] {
+            result = window.runLanguageSmokeTest(args[2]) ? 0 : 1;
+            app.exit(result);
+        });
+    } else if (args.size() >= 3 && args[1] == "--smoke-test") {
         QTimer::singleShot(200, &window, [&] {
             result = window.runSmokeTest(args[2]) ? 0 : 1;
             app.exit(result);

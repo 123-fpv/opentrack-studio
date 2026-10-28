@@ -23,6 +23,7 @@ class StudioWindow : public QMainWindow {
     void applyDocument(const TrackDocument &doc);
     bool runSmokeTest(const QString &directory);
     bool openPath(const QString &path);
+    bool runLanguageSmokeTest(const QString &directory);
 
   protected:
     void closeEvent(QCloseEvent *) override;
@@ -51,6 +52,7 @@ class StudioWindow : public QMainWindow {
     QTabWidget *sequenceTabs_ = nullptr;
     QWidget *stepPanel_ = nullptr;
     QComboBox *stepFace_ = nullptr, *stepReverse_ = nullptr, *maneuver_ = nullptr;
+    QComboBox *language_ = nullptr;
     QWidget *maneuverPreview_ = nullptr;
     QLabel *maneuverHint_ = nullptr, *routeStatus_ = nullptr;
     QLabel *stepSummary_ = nullptr, *takeoffStatus_ = nullptr;
@@ -70,6 +72,7 @@ class StudioWindow : public QMainWindow {
     bool selectingRoute_ = false;
     quint64 revision_ = 0;
     void setupUi();
+    void changeLanguage(const QString &code);
     void setupShortcuts();
     void fitViews();
     void setPlacement(const QString &type, double width = 2.4, double height = 2.4);

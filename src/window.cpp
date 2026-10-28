@@ -1,6 +1,7 @@
 #include "window.h"
 #include "aidialog.h"
 #include "imageimport.h"
+#include "language.h"
 #include "recognizer.h"
 #include "scene3d.h"
 #include "velocidrone.h"
@@ -40,21 +41,24 @@ QString passDescription(const Gate &gate, const RouteStep &step) {
     QStringList parts;
     const auto metrics = gateFrameMetrics(gate);
     if (metrics.columns > 1)
-        parts << QString("第%1窗").arg(step.column + 1);
+        parts << i18n::text("第%1窗").arg(step.column + 1);
     if (metrics.levels > 1)
-        parts << (step.level == 0 ? QString("下层") : QString("上层"));
-    const QMap<QString, QString> faces{{"front", "前面"}, {"back", "背面"}, {"left", "左面"},
-                                       {"right", "右面"}, {"top", "顶面"},  {"bottom", "底面"}};
+        parts << (step.level == 0 ? i18n::text("下层") : i18n::text("上层"));
+    const QMap<QString, QString> faces{
+        {"front", i18n::text("前面")}, {"back", i18n::text("背面")},
+        {"left", i18n::text("左面")},  {"right", i18n::text("右面")},
+        {"top", i18n::text("顶面")},   {"bottom", i18n::text("底面")}};
     if (metrics.centerDepth > 0)
         parts << faces.value(step.face, step.face);
     if (step.face == "top")
-        parts << (step.reverse ? "向上穿出" : "向下穿入");
+        parts << (step.reverse ? i18n::text("向上穿出") : i18n::text("向下穿入"));
     else if (step.face == "bottom")
-        parts << (step.reverse ? "向下穿出" : "向上穿入");
+        parts << (step.reverse ? i18n::text("向下穿出") : i18n::text("向上穿入"));
     else if (metrics.centerDepth > 0)
-        parts << (step.reverse ? "向外穿出" : "向内穿入");
+        parts << (step.reverse ? i18n::text("向外穿出") : i18n::text("向内穿入"));
     else
-        parts << ((step.face == "back") != step.reverse ? "反穿" : "正穿");
+        parts << ((step.face == "back") != step.reverse ? i18n::text("背面 → 前面")
+                                                        : i18n::text("前面 → 背面"));
     return parts.join(" · ");
 }
 bool sameDocument(const TrackDocument &a, const TrackDocument &b) {
@@ -118,7 +122,7 @@ class ManeuverPreview final : public QWidget {
         setMinimumHeight(170);
         setMaximumHeight(170);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        setToolTip("三维动作预览：按编号和箭头连续绕杆，灰色杆件会遮住后方路线。");
+        setToolTip(i18n::text("三维动作预览：按编号和箭头连续绕杆，灰色杆件会遮住后方路线。"));
     }
     void setManeuver(const Gate *source, const QString &pattern,
                      const QVector<RouteStep> &sourceSteps) {
@@ -255,7 +259,8 @@ class ManeuverPreview final : public QWidget {
             painter.drawText(badge, Qt::AlignCenter, QString::number(i + 1));
         }
         painter.setPen(QColor("#555555"));
-        painter.drawText(QRect(9, 4, width() - 18, 18), "3D 动作 · 按编号和箭头连续通过");
+        painter.drawText(QRect(9, 4, width() - 18, 18),
+                         i18n::text("3D 动作 · 按编号和箭头连续通过"));
     }
 };
 class GateCard final : public QPushButton {
@@ -264,12 +269,13 @@ class GateCard final : public QPushButton {
   public:
     GateCard(QString type, QString title, QString subtitle)
         : type_(type), title_(title), subtitle_(subtitle) {
-        setStyleSheet("min-height:104px;max-height:104px;padding:0px;");
+        setStyleSheet(i18n::english() ? "min-height:112px;max-height:112px;padding:0px;"
+                                      : "min-height:104px;max-height:104px;padding:0px;");
         setMinimumWidth(86);
         setCursor(Qt::PointingHandCursor);
         setCheckable(true);
         setAutoExclusive(true);
-        setToolTip(title + " · 选中后点击画布放置");
+        setToolTip(title + i18n::text(" · 选中后点击画布放置"));
     }
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
@@ -280,28 +286,31 @@ class GateCard final : public QPushButton {
         p.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 3, 3);
         paintGateSymbol(&p, QRectF(width() / 2. - 28, 7, 56, 48), type_);
         QFont f = font();
-        f.setPointSize(9);
+        f.setPointSize(i18n::english() ? 8 : 9);
         f.setWeight(QFont::DemiBold);
         p.setFont(f);
         p.setPen(QColor("#222222"));
-        p.drawText(QRect(0, 64, width(), 18), Qt::AlignCenter, title_);
+        p.drawText(i18n::english() ? QRect(2, 56, width() - 4, 28) : QRect(0, 64, width(), 18),
+                   Qt::AlignCenter | (i18n::english() ? Qt::TextWordWrap : 0), title_);
         f.setWeight(QFont::Normal);
-        f.setPointSize(8);
+        f.setPointSize(i18n::english() ? 7 : 8);
         p.setFont(f);
         p.setPen(QColor("#707070"));
-        p.drawText(QRect(0, 83, width(), 15), Qt::AlignCenter, subtitle_);
+        p.drawText(i18n::english() ? QRect(2, 87, width() - 4, 22) : QRect(0, 83, width(), 15),
+                   Qt::AlignCenter | (i18n::english() ? Qt::TextWordWrap : 0), subtitle_);
     }
 };
 } // namespace
 
 StudioWindow::StudioWindow() {
     doc_ = demoDocument();
+    doc_.name = i18n::text(doc_.name); // Only this newly created, built-in demo name.
     setupUi();
     setupShortcuts();
     canvas_->setDocument(&doc_);
     applyDocument(doc_);
     undo_.setClean();
-    setWindowTitle(QString("OpenTrack Studio %1 — VelociDrone 赛道工作台")
+    setWindowTitle(i18n::text("OpenTrack Studio %1 — VelociDrone 赛道工作台")
                        .arg(QCoreApplication::applicationVersion()));
     setMinimumSize(1140, 740);
     const QRect available = QGuiApplication::primaryScreen()->availableGeometry();
@@ -356,18 +365,30 @@ void StudioWindow::setupUi() {
     auto *titles = new QVBoxLayout;
     titles->setSpacing(1);
     titles->addWidget(label("OpenTrack Studio", "brand"));
-    titles->addWidget(label("为 VelociDrone 打造的开源赛道工作台", "brandSub"));
+    titles->addWidget(label(i18n::text("为 VelociDrone 打造的开源赛道工作台"), "brandSub"));
     hl->addLayout(titles);
     hl->addSpacing(28);
-    hl->addWidget(label("赛道编辑", "headerTab"));
+    hl->addWidget(label(i18n::text("赛道编辑"), "headerTab"));
     hl->addStretch();
-    hl->addWidget(label("●  本地工程 · 无需登录", "localBadge"));
-    auto *imp = button("＋  导入图片", "headerImport");
+    hl->addWidget(label(i18n::text("●  本地工程 · 无需登录"), "localBadge"));
+    language_ = new QComboBox;
+    language_->setObjectName("languageSelector");
+    language_->addItem("简体中文", "zh");
+    language_->addItem("English", "en");
+    language_->setCurrentIndex(i18n::english() ? 1 : 0);
+    language_->setToolTip(i18n::text("界面语言"));
+    language_->setMinimumContentsLength(7);
+    hl->addWidget(language_);
+    connect(language_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        const QString code = language_->itemData(index).toString();
+        QTimer::singleShot(0, this, [this, code] { changeLanguage(code); });
+    });
+    auto *imp = button(i18n::text("＋  导入图片"), "headerImport");
     auto *importMenu = new QMenu(imp);
-    auto *planAction = importMenu->addAction("平面赛道图 · 本地识别");
-    auto *photoAction = importMenu->addAction("实拍 / 航拍照片 · AI 生成");
+    auto *planAction = importMenu->addAction(i18n::text("平面赛道图 · 本地识别"));
+    auto *photoAction = importMenu->addAction(i18n::text("实拍 / 航拍照片 · AI 生成"));
     imp->setMenu(importMenu);
-    auto *exp = button("导出赛道 .trk  ↗", "primary");
+    auto *exp = button(i18n::text("导出赛道 .trk  ↗"), "primary");
     hl->addWidget(imp);
     hl->addWidget(exp);
     connect(planAction, &QAction::triggered, this, [this] { importImage(); });
@@ -387,38 +408,40 @@ void StudioWindow::setupUi() {
         tl->addWidget(b);
         return b;
     };
-    tool("新建", "Ctrl+N", [this] { newProject(); });
-    tool("打开", "Ctrl+O", [this] { openProject(); });
-    tool("保存工程", "Ctrl+S", [this] { save(); });
+    tool(i18n::text("新建"), "Ctrl+N", [this] { newProject(); });
+    tool(i18n::text("打开"), "Ctrl+O", [this] { openProject(); });
+    tool(i18n::text("保存工程"), "Ctrl+S", [this] { save(); });
     tl->addSpacing(12);
-    auto *undo = tool("↶  撤销", "Ctrl+Z", [this] { undo_.undo(); });
-    auto *redo = tool("↷  重做", "Ctrl+Shift+Z", [this] { undo_.redo(); });
+    auto *undo = tool(i18n::text("↶  撤销"), "Ctrl+Z", [this] { undo_.undo(); });
+    auto *redo = tool(i18n::text("↷  重做"), "Ctrl+Shift+Z", [this] { undo_.redo(); });
     connect(&undo_, &QUndoStack::canUndoChanged, undo, &QPushButton::setEnabled);
     connect(&undo_, &QUndoStack::canRedoChanged, redo, &QPushButton::setEnabled);
-    undo->setEnabled(false);
-    redo->setEnabled(false);
+    undo->setEnabled(undo_.canUndo());
+    redo->setEnabled(undo_.canRedo());
     tl->addSpacing(12);
-    tool("选择 / 移动", "Esc", [this] { setPlacement({}); });
-    tool("设置起飞点", "独立起飞架", [this] {
+    tool(i18n::text("选择 / 移动"), "Esc", [this] { setPlacement({}); });
+    tool(i18n::text("设置起飞点"), i18n::text("独立起飞架"), [this] {
         setPlacement("__takeoff", .8, .1);
-        notice_->setText("在地面单击放置独立起飞点；它不占用过门编号。Esc 取消。");
+        notice_->setText(i18n::text("在地面单击放置独立起飞点；它不占用过门编号。Esc 取消。"));
     });
-    tool("复制选择", "Ctrl+D", [this] {
+    tool(i18n::text("复制选择"), "Ctrl+D", [this] {
         if (!selectedRouteStep_.isEmpty())
             duplicateRoutePass();
         else
             duplicateGate();
     });
-    tool("删除选择", "Delete", [this] {
+    tool(i18n::text("删除选择"), "Delete", [this] {
         if (!selectedRouteStep_.isEmpty())
             deleteRoutePass();
         else
             deleteGate();
     });
     tl->addStretch();
-    auto *snap = new QCheckBox("0.5 m 吸附");
+    auto *snap = new QCheckBox(i18n::text("0.5 m 吸附"));
+    snap->setObjectName("snapToGrid");
     snap->setChecked(true);
-    auto *route = new QCheckBox("显示航线");
+    auto *route = new QCheckBox(i18n::text("显示航线"));
+    route->setObjectName("showRoute");
     route->setChecked(true);
     tl->addWidget(snap);
     tl->addWidget(route);
@@ -433,12 +456,12 @@ void StudioWindow::setupUi() {
             scene3d_->setRouteVisible(b);
     });
     tl->addSpacing(10);
-    tool("适应视角", "F", [this] { fitViews(); });
-    tool("操作说明", "快速上手", [this] {
+    tool(i18n::text("适应视角"), "F", [this] { fitViews(); });
+    tool(i18n::text("操作说明"), i18n::text("快速上手"), [this] {
         QMessageBox help(this);
-        help.setWindowTitle("OpenTrack Studio · 操作说明");
+        help.setWindowTitle(i18n::text("OpenTrack Studio · 操作说明"));
         help.setTextFormat(Qt::PlainText);
-        help.setText(
+        help.setText(i18n::text(
             "① 查看赛道\n右键旋转视角，中键平移，滚轮缩放；F 显示整条赛道。\n\n"
             "② 移动组件\n先单击并松开，看到光圈后，再按住组件或脚下光圈拖动。\n"
             "左侧修改中心距、高度、朝向和颜色；转向柱可选择左右绕行。\n"
@@ -446,7 +469,13 @@ void StudioWindow::setupUi() {
             "③ 从图片生成\n平面赛道图在本地识别；实拍、航拍照片使用 AI 生成草稿，预览后应用。\n\n"
             "④ 保存和使用\n保存工程得到 .otproj，方便继续编辑。\n"
             "导出赛道得到 .trk，在 VelociDrone 的 Track Editor → Import Track 中导入。\n\n"
-            "Ctrl+Z 撤销 · Ctrl+D 复制 · Delete 删除 · Q/E 旋转组件");
+            "Ctrl+Z 撤销 · Ctrl+D 复制 · Delete 删除 · Q/E 旋转组件"));
+        help.setText(
+            help.text() + "\n\n" +
+            i18n::text(
+                "Copyright © 2026 OpenTrack Studio contributors\n"
+                "本软件按 GNU GPL-3.0-or-later 授权，可按许可证条款修改和再分发，不提供任何担保。\n"
+                "源码与许可证：https://github.com/123-fpv/opentrack-studio"));
         help.setStandardButtons(QMessageBox::Ok);
         help.exec();
     });
@@ -466,8 +495,8 @@ void StudioWindow::setupUi() {
     ll->setSpacing(12);
     leftScroll->setWidget(left);
     main->addWidget(leftScroll);
-    ll->addWidget(label("工程设置", "sectionTitle"));
-    ll->addWidget(label("赛道名称", "fieldLabel"));
+    ll->addWidget(label(i18n::text("工程设置"), "sectionTitle"));
+    ll->addWidget(label(i18n::text("赛道名称"), "fieldLabel"));
     name_ = new QLineEdit;
     name_->setMaxLength(120);
     ll->addWidget(name_);
@@ -476,15 +505,15 @@ void StudioWindow::setupUi() {
             return;
         const QString value = name_->text().trimmed();
         if (!value.isEmpty() && value != doc_.name)
-            edit("修改赛道名称", [value](TrackDocument &d) { d.name = value; });
+            edit(i18n::text("修改赛道名称"), [value](TrackDocument &d) { d.name = value; });
     });
-    ll->addWidget(label("模拟器场景", "fieldLabel"));
+    ll->addWidget(label(i18n::text("模拟器场景"), "fieldLabel"));
     scenery_ = new QComboBox;
     scenery_->addItems({"Football Stadium", "Empty Scene Day"});
     ll->addWidget(scenery_);
     connect(scenery_, &QComboBox::currentTextChanged, this, [this](const QString &s) {
         if (!updating_)
-            edit("修改场景", [s](TrackDocument &d) { d.scenery = s; });
+            edit(i18n::text("修改场景"), [s](TrackDocument &d) { d.scenery = s; });
     });
     auto *stats = new QFrame;
     stats->setObjectName("statsCard");
@@ -492,26 +521,27 @@ void StudioWindow::setupUi() {
     auto *a = new QVBoxLayout;
     gateCount_ = label("18", "statValue");
     a->addWidget(gateCount_);
-    a->addWidget(label("实体 / 过门次数", "subtle"));
+    a->addWidget(label(i18n::text("实体 / 过门次数"), "subtle"));
     auto *b = new QVBoxLayout;
     length_ = label("0 m", "statValue");
     b->addWidget(length_);
-    b->addWidget(label("参考航线长度", "subtle"));
+    b->addWidget(label(i18n::text("参考航线长度"), "subtle"));
     sl->addLayout(a);
     sl->addLayout(b);
     ll->addWidget(stats);
-    auto *takeoffBox = new QGroupBox("独立起飞点");
+    auto *takeoffBox = new QGroupBox(i18n::text("独立起飞点"));
     auto *takeoffLayout = new QVBoxLayout(takeoffBox);
     takeoffLayout->setSpacing(7);
-    takeoffStatus_ = label("尚未设置 · 导出前必须设置", "subtle");
+    takeoffStatus_ = label(i18n::text("尚未设置 · 导出前必须设置"), "subtle");
     takeoffStatus_->setWordWrap(true);
     takeoffLayout->addWidget(takeoffStatus_);
-    auto *placeTakeoff = button("在场景放置起飞点", "secondary");
+    auto *placeTakeoff = button(i18n::text("在场景放置起飞点"), "secondary");
     placeTakeoff->setObjectName("placeTakeoff");
     takeoffLayout->addWidget(placeTakeoff);
     connect(placeTakeoff, &QPushButton::clicked, this, [this] {
         setPlacement("__takeoff", .8, .1);
-        notice_->setText("单击地面设置起飞点，再输入朝向；起飞点独立于赛道门和过门步骤。");
+        notice_->setText(
+            i18n::text("单击地面设置起飞点，再输入朝向；起飞点独立于赛道门和过门步骤。"));
     });
     auto *takeoffCoordinates = new QWidget;
     auto *takeoffForm = new QGridLayout(takeoffCoordinates);
@@ -520,18 +550,20 @@ void StudioWindow::setupUi() {
     takeoffY_ = number(-10000, 10000);
     takeoffZ_ = number(-1000, 1000);
     takeoffYaw_ = number(-3600, 3600, 15);
-    const QList<QPair<QString, QDoubleSpinBox *>> takeoffFields = {{"X / m", takeoffX_},
-                                                                   {"Y / m", takeoffY_},
-                                                                   {"基点 Z / m", takeoffZ_},
-                                                                   {"朝向 / °", takeoffYaw_}};
+    const QList<QPair<QString, QDoubleSpinBox *>> takeoffFields = {
+        {"X / m", takeoffX_},
+        {"Y / m", takeoffY_},
+        {i18n::text("基点 Z / m"), takeoffZ_},
+        {i18n::text("朝向 / °"), takeoffYaw_}};
     for (int i = 0; i < takeoffFields.size(); ++i) {
         takeoffForm->addWidget(label(takeoffFields[i].first, "fieldLabel"), (i / 2) * 2, i % 2);
         takeoffForm->addWidget(takeoffFields[i].second, (i / 2) * 2 + 1, i % 2);
         connect(takeoffFields[i].second, &QDoubleSpinBox::editingFinished, this,
                 [this] { editTakeoff(); });
     }
-    takeoffBox->setToolTip("这里设置原生起飞架的基点和朝向；模拟器会在起飞架上分配起飞位。");
-    auto *takeoffDetails = button("坐标与朝向 ▸", "tool");
+    takeoffBox->setToolTip(
+        i18n::text("这里设置原生起飞架的基点和朝向；模拟器会在起飞架上分配起飞位。"));
+    auto *takeoffDetails = button(i18n::text("坐标与朝向 ▸"), "tool");
     takeoffDetails->setCheckable(true);
     takeoffLayout->addWidget(takeoffDetails);
     takeoffCoordinates->hide();
@@ -539,21 +571,21 @@ void StudioWindow::setupUi() {
     connect(takeoffDetails, &QPushButton::toggled, takeoffCoordinates, &QWidget::setVisible);
     ll->addWidget(takeoffBox);
     ll->addWidget(line());
-    ll->addWidget(label("图片生成赛道", "sectionTitle"));
-    auto *import = button("拖入赛道图片\n或点击选择，自动生成", "imageDropZone");
+    ll->addWidget(label(i18n::text("图片生成赛道"), "sectionTitle"));
+    auto *import = button(i18n::text("拖入赛道图片\n或点击选择，自动生成"), "imageDropZone");
     import->setMinimumHeight(60);
-    import->setToolTip(
-        "支持 PNG / JPG / BMP；也可直接拖到 3D 场景或俯视图。多张照片进入 AI 草稿预览。");
+    import->setToolTip(i18n::text(
+        "支持 PNG / JPG / BMP；也可直接拖到 3D 场景或俯视图。多张照片进入 AI 草稿预览。"));
     dropZone_ = import;
     ll->addWidget(import);
     connect(import, &QPushButton::clicked, this, [this] { importImage(); });
-    imageStatus_ = label("支持 PNG / JPG / BMP\n可拖到这里、3D 场景或俯视图", "subtle");
+    imageStatus_ = label(i18n::text("支持 PNG / JPG / BMP\n可拖到这里、3D 场景或俯视图"), "subtle");
     imageStatus_->setWordWrap(true);
     ll->addWidget(imageStatus_);
-    auto *aiPhotos = button("AI 解析当前图 / 多张照片", "secondary");
+    auto *aiPhotos = button(i18n::text("AI 解析当前图 / 多张照片"), "secondary");
     ll->addWidget(aiPhotos);
     connect(aiPhotos, &QPushButton::clicked, this, [this] { importPhotosWithAi(); });
-    auto *advancedToggle = button("比例与底图设置  ▸", "tool");
+    auto *advancedToggle = button(i18n::text("比例与底图设置  ▸"), "tool");
     advancedToggle->setCheckable(true);
     ll->addWidget(advancedToggle);
     auto *advanced = new QWidget;
@@ -563,10 +595,10 @@ void StudioWindow::setupUi() {
     advanced->hide();
     ll->addWidget(advanced);
     connect(advancedToggle, &QPushButton::toggled, advanced, &QWidget::setVisible);
-    autoScale_ = new QCheckBox("按中心距 3 m 估算比例");
+    autoScale_ = new QCheckBox(i18n::text("按中心距 3 m 估算比例"));
     autoScale_->setChecked(true);
     al->addWidget(autoScale_);
-    al->addWidget(label("底图比例 · 米 / 像素", "fieldLabel"));
+    al->addWidget(label(i18n::text("底图比例 · 米 / 像素"), "fieldLabel"));
     scale_ = number(.0001, 10, .001);
     scale_->setDecimals(4);
     al->addWidget(scale_);
@@ -574,7 +606,7 @@ void StudioWindow::setupUi() {
         if (updating_ || qFuzzyCompare(scale_->value(), doc_.metersPerPixel))
             return;
         const double n = scale_->value();
-        edit("调整底图比例", [n](TrackDocument &d) {
+        edit(i18n::text("调整底图比例"), [n](TrackDocument &d) {
             const double factor = n / d.metersPerPixel;
             d.backgroundOrigin *= factor;
             for (auto &g : d.gates)
@@ -588,30 +620,31 @@ void StudioWindow::setupUi() {
             d.metersPerPixel = n;
         });
     });
-    recognizeButton_ = button("识别图片并生成赛道", "primary");
+    recognizeButton_ = button(i18n::text("识别图片并生成赛道"), "primary");
     ll->addWidget(recognizeButton_);
     connect(recognizeButton_, &QPushButton::clicked, this, [this] { startRecognition(); });
-    imageVisible_ = new QCheckBox("仅在俯视图显示参考图");
+    imageVisible_ = new QCheckBox(i18n::text("仅在俯视图显示参考图"));
     imageVisible_->setChecked(false);
     al->addWidget(imageVisible_);
     connect(imageVisible_, &QCheckBox::toggled, this, [this](bool b) {
         if (!updating_)
-            edit("切换底图", [b](TrackDocument &d) { d.showBackground = b; });
+            edit(i18n::text("切换底图"), [b](TrackDocument &d) { d.showBackground = b; });
     });
-    al->addWidget(label("底图透明度", "fieldLabel"));
+    al->addWidget(label(i18n::text("底图透明度"), "fieldLabel"));
     opacity_ = new QSlider(Qt::Horizontal);
     opacity_->setRange(0, 100);
     al->addWidget(opacity_);
     connect(opacity_, &QSlider::sliderReleased, this, [this] {
         const double n = opacity_->value() / 100.;
-        edit("调整底图透明度", [n](TrackDocument &d) { d.backgroundOpacity = n; });
+        edit(i18n::text("调整底图透明度"), [n](TrackDocument &d) { d.backgroundOpacity = n; });
     });
     ll->addWidget(line());
     properties_ = new QWidget;
     auto *pl = new QVBoxLayout(properties_);
     pl->setContentsMargins(0, 0, 0, 0);
     pl->setSpacing(10);
-    selectionTitle_ = label("门架属性", "sectionTitle");
+    selectionTitle_ = label(i18n::text("门架属性"), "sectionTitle");
+    selectionTitle_->setWordWrap(true);
     pl->addWidget(selectionTitle_);
     auto *grid = new QGridLayout;
     grid->setHorizontalSpacing(9);
@@ -623,8 +656,9 @@ void StudioWindow::setupUi() {
     width_ = number(.01, 100, .01);
     height_ = number(.1, 100);
     const QList<QPair<QString, QDoubleSpinBox *>> props = {
-        {"X 位置 / m", x_}, {"Y 位置 / m", z_},   {"Z 中心高度 / m", alt_},
-        {"朝向 / °", yaw_}, {"宽度 / m", width_}, {"高度 / m", height_}};
+        {i18n::text("X 位置 / m"), x_},       {i18n::text("Y 位置 / m"), z_},
+        {i18n::text("Z 中心高度 / m"), alt_}, {i18n::text("朝向 / °"), yaw_},
+        {i18n::text("宽度 / m"), width_},     {i18n::text("高度 / m"), height_}};
     for (int i = 0; i < props.size(); ++i) {
         auto *field = label(props[i].first, "fieldLabel");
         if (i == 4)
@@ -640,7 +674,7 @@ void StudioWindow::setupUi() {
     passCell_ = new QWidget;
     auto *passCellLayout = new QHBoxLayout(passCell_);
     passCellLayout->setContentsMargins(0, 0, 0, 0);
-    passCellLayout->addWidget(label("通过格", "fieldLabel"));
+    passCellLayout->addWidget(label(i18n::text("通过格"), "fieldLabel"));
     passColumn_ = new QComboBox;
     passLevel_ = new QComboBox;
     passCellLayout->addWidget(passColumn_);
@@ -655,7 +689,7 @@ void StudioWindow::setupUi() {
         }
         const QString id = selected_;
         const int column = passColumn_->currentIndex(), level = passLevel_->currentIndex();
-        edit("调整组合门通过格", [id, column, level](TrackDocument &d) {
+        edit(i18n::text("调整组合门通过格"), [id, column, level](TrackDocument &d) {
             for (auto &gate : d.gates)
                 if (gate.id == id) {
                     gate.extra.insert("passColumn", std::max(0, column));
@@ -668,13 +702,13 @@ void StudioWindow::setupUi() {
     stepPanel_ = new QWidget;
     auto *stepLayout = new QVBoxLayout(stepPanel_);
     stepLayout->setContentsMargins(0, 0, 0, 0);
-    stepSummary_ = label("选择一次穿越，编辑窗口和方向", "subtle");
+    stepSummary_ = label(i18n::text("选择一次穿越，编辑窗口和方向"), "subtle");
     stepSummary_->setWordWrap(true);
     stepLayout->addWidget(stepSummary_);
     stepFace_ = new QComboBox;
     stepReverse_ = new QComboBox;
-    stepReverse_->addItems({"正向穿越", "反转穿越方向"});
-    stepLayout->addWidget(label("穿越面与方向", "fieldLabel"));
+    stepReverse_->addItems({i18n::text("正向穿越"), i18n::text("反转穿越方向")});
+    stepLayout->addWidget(label(i18n::text("穿越面与方向"), "fieldLabel"));
     stepLayout->addWidget(stepFace_);
     stepLayout->addWidget(stepReverse_);
     pl->addWidget(stepPanel_);
@@ -682,9 +716,9 @@ void StudioWindow::setupUi() {
     connect(stepReverse_, &QComboBox::currentIndexChanged, this, [this] { editRouteSelection(); });
     maneuver_ = new QComboBox;
     maneuver_->setObjectName("maneuverPattern");
-    auto *applyManeuver = button("应用动作", "tool");
+    auto *applyManeuver = button(i18n::text("应用动作"), "tool");
     applyManeuver->setObjectName("applyManeuver");
-    pl->addWidget(label("手动校正过门动作", "fieldLabel"));
+    pl->addWidget(label(i18n::text("手动校正过门动作"), "fieldLabel"));
     pl->addWidget(maneuver_);
     maneuverPreview_ = new ManeuverPreview;
     pl->addWidget(maneuverPreview_);
@@ -701,7 +735,7 @@ void StudioWindow::setupUi() {
     dimensions_->setObjectName("componentDimensions");
     dimensions_->setWordWrap(true);
     pl->addWidget(dimensions_);
-    pl->addWidget(label("组件颜色", "fieldLabel"));
+    pl->addWidget(label(i18n::text("组件颜色"), "fieldLabel"));
     auto *colorRow = new QHBoxLayout;
     color_ = new QComboBox;
     color_->setObjectName("componentColor");
@@ -709,11 +743,11 @@ void StudioWindow::setupUi() {
     for (const auto &entry : nativeBlockColors()) {
         QPixmap swatch(18, 18);
         swatch.fill(entry.color);
-        color_->addItem(QIcon(swatch), entry.name, entry.color.name());
+        color_->addItem(QIcon(swatch), i18n::text(entry.name), entry.color.name());
     }
-    color_->addItem("自定义颜色", QString());
+    color_->addItem(i18n::text("自定义颜色"), QString());
     colorRow->addWidget(color_, 1);
-    auto *customColor = button("调色", "tool");
+    auto *customColor = button(i18n::text("调色"), "tool");
     customColor->setObjectName("customComponentColor");
     colorRow->addWidget(customColor);
     pl->addLayout(colorRow);
@@ -736,21 +770,21 @@ void StudioWindow::setupUi() {
                 initial = gateColor(g);
         if (!initial.isValid())
             return;
-        const QColor chosen = QColorDialog::getColor(initial, this, "选择组件颜色");
+        const QColor chosen = QColorDialog::getColor(initial, this, i18n::text("选择组件颜色"));
         if (chosen.isValid())
             editColor(chosen);
         updateSelection(selected_);
     });
-    passSideLabel_ = label("绕柱通过侧", "fieldLabel");
+    passSideLabel_ = label(i18n::text("绕柱通过侧"), "fieldLabel");
     passSide_ = new QComboBox;
-    passSide_->addItems({"右侧绕过", "左侧绕过"});
+    passSide_->addItems({i18n::text("右侧绕过"), i18n::text("左侧绕过")});
     pl->addWidget(passSideLabel_);
     pl->addWidget(passSide_);
     connect(passSide_, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (updating_ || selected_.isEmpty())
             return;
         const QString id = selected_;
-        edit("调整绕柱侧", [id, index](TrackDocument &d) {
+        edit(i18n::text("调整绕柱侧"), [id, index](TrackDocument &d) {
             for (auto &g : d.gates)
                 if (g.id == id && g.type == "pillar")
                     g.extra.insert("passSide", index == 0 ? 1 : -1);
@@ -761,7 +795,13 @@ void StudioWindow::setupUi() {
     ll->insertWidget(0, properties_);
     properties_->hide();
     ll->addStretch();
-    auto *about = label("OPEN SOURCE / MIT\n无需注册 · 支持自带 API", "localNote");
+    auto *about =
+        label(i18n::text("OPEN SOURCE / GPL-3.0-or-later\n无需注册 · 支持自带 API"), "localNote");
+    about->setTextFormat(Qt::RichText);
+    about->setOpenExternalLinks(true);
+    about->setText(about->text().toHtmlEscaped().replace("\n", "<br>") +
+                   "<br><a href=\"https://github.com/123-fpv/opentrack-studio\">" +
+                   i18n::text("源码与许可证") + "</a>");
     about->setWordWrap(true);
     ll->addWidget(about);
     auto *center = new QWidget;
@@ -771,9 +811,9 @@ void StudioWindow::setupUi() {
     cl->setSpacing(10);
     main->addWidget(center);
     auto *ch = new QHBoxLayout;
-    ch->addWidget(label("赛道场景", "sectionTitle"));
-    auto *view3 = button("3D 视角", "viewToggle");
-    auto *view2 = button("俯视图", "viewToggle");
+    ch->addWidget(label(i18n::text("赛道场景"), "sectionTitle"));
+    auto *view3 = button(i18n::text("3D 视角"), "viewToggle");
+    auto *view2 = button(i18n::text("俯视图"), "viewToggle");
     view3->setCheckable(true);
     view2->setCheckable(true);
     auto *viewGroup = new QButtonGroup(this);
@@ -785,16 +825,17 @@ void StudioWindow::setupUi() {
     ch->addWidget(view3);
     ch->addWidget(view2);
     ch->addStretch();
-    auto *preview = button("▶  航线预览", "secondary");
+    auto *preview = button(i18n::text("▶  航线预览"), "secondary");
     preview->setCheckable(true);
     ch->addWidget(preview);
     connect(preview, &QPushButton::toggled, this, [this, preview](bool b) {
         canvas_->setPreview(b);
         if (scene3d_)
             scene3d_->setPreview(b);
-        preview->setText(b ? "Ⅱ  暂停预览" : "▶  航线预览");
+        preview->setText(b ? i18n::text("Ⅱ  暂停预览") : i18n::text("▶  航线预览"));
     });
     auto *speed = new QComboBox;
+    speed->setObjectName("previewSpeed");
     speed->addItems({"40 km/h", "70 km/h", "100 km/h"});
     speed->setCurrentIndex(1);
     speed->setMaximumWidth(98);
@@ -805,7 +846,7 @@ void StudioWindow::setupUi() {
             scene3d_->setPreviewSpeed(i == 0 ? 40 : i == 1 ? 70 : 100);
     });
     cl->addLayout(ch);
-    notice_ = label("示例赛道 · 导入俯视图，即可识别生成并继续编辑。", "notice");
+    notice_ = label(i18n::text("示例赛道 · 导入俯视图，即可识别生成并继续编辑。"), "notice");
     notice_->setWordWrap(true);
     cl->addWidget(notice_);
     routeStatus_ = label({}, "subtle");
@@ -841,11 +882,11 @@ void StudioWindow::setupUi() {
         canvas_->fitTrack();
     });
     auto *orderHead = new QHBoxLayout;
-    orderHead->addWidget(label("飞行顺序", "sectionTitle"));
-    orderHead->addWidget(label("实体门可被多次穿越；编号按过门次数排列", "subtle"));
+    orderHead->addWidget(label(i18n::text("飞行顺序"), "sectionTitle"));
+    orderHead->addWidget(label(i18n::text("实体门可被多次穿越；编号按过门次数排列"), "subtle"));
     orderHead->addStretch();
-    auto *prev = button("← 前移", "tool");
-    auto *next = button("后移 →", "tool");
+    auto *prev = button(i18n::text("← 前移"), "tool");
+    auto *next = button(i18n::text("后移 →"), "tool");
     orderHead->addWidget(prev);
     orderHead->addWidget(next);
     connect(prev, &QPushButton::clicked, this, [this] {
@@ -860,9 +901,9 @@ void StudioWindow::setupUi() {
         else
             moveOrder(1);
     });
-    auto *addPass = button("＋ 穿越", "tool");
-    auto *copyPass = button("重复本次", "tool");
-    auto *removePass = button("删本次", "tool");
+    auto *addPass = button(i18n::text("＋ 穿越"), "tool");
+    auto *copyPass = button(i18n::text("重复本次"), "tool");
+    auto *removePass = button(i18n::text("删本次"), "tool");
     orderHead->addWidget(addPass);
     orderHead->addWidget(copyPass);
     orderHead->addWidget(removePass);
@@ -886,8 +927,8 @@ void StudioWindow::setupUi() {
     routeOrder_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     routeOrder_->setSpacing(5);
     sequenceTabs_ = new QTabWidget;
-    sequenceTabs_->addTab(routeOrder_, "过门步骤");
-    sequenceTabs_->addTab(order_, "实体组件");
+    sequenceTabs_->addTab(routeOrder_, i18n::text("过门步骤"));
+    sequenceTabs_->addTab(order_, i18n::text("实体组件"));
     sequenceTabs_->setFixedHeight(112);
     cl->addWidget(sequenceTabs_);
     connect(sequenceTabs_, &QTabWidget::currentChanged, this, [this](int tab) {
@@ -927,8 +968,8 @@ void StudioWindow::setupUi() {
     rl->setContentsMargins(16, 20, 16, 16);
     rl->setSpacing(12);
     main->addWidget(rightScroll);
-    rl->addWidget(label("赛道组件", "sectionTitle"));
-    rl->addWidget(label("选择组件，再点击画布放置", "subtle"));
+    rl->addWidget(label(i18n::text("赛道组件"), "sectionTitle"));
+    rl->addWidget(label(i18n::text("选择组件，再点击画布放置"), "subtle"));
     auto *cards = new QGridLayout;
     auto *placementGroup = new QButtonGroup(right);
     placementGroup->setObjectName("placementGroup");
@@ -938,9 +979,10 @@ void StudioWindow::setupUi() {
         QString type, title, sub;
         double w, h;
     };
-    const QList<Definition> defs = {{"standard", "标准门", "中心距 3 × 3 m", 3.0, 3.0},
-                                    {"start", "起终点门", "中心距 3 × 3 m", 3.0, 3.0},
-                                    {"pillar", "转向柱", "0.1 × 3.2 m", .1, 3.2}};
+    const QList<Definition> defs = {
+        {"standard", i18n::text("标准门"), i18n::text("中心距 3 × 3 m"), 3.0, 3.0},
+        {"start", i18n::text("起终点门"), i18n::text("中心距 3 × 3 m"), 3.0, 3.0},
+        {"pillar", i18n::text("转向柱"), "0.1 × 3.2 m", .1, 3.2}};
     for (int i = 0; i < defs.size(); ++i) {
         const auto d = defs[i];
         auto *card = new GateCard(d.type, d.title, d.sub);
@@ -948,22 +990,24 @@ void StudioWindow::setupUi() {
         cards->addWidget(card, i / 2, i % 2);
         connect(card, &QPushButton::clicked, this, [this, d] {
             setPlacement(d.type, d.w, d.h);
-            notice_->setText("已选择" + d.title + " · 点击画布放置，Esc 返回选择工具。");
+            notice_->setText(i18n::text("已选择") + d.title +
+                             i18n::text(" · 点击画布放置，Esc 返回选择工具。"));
         });
     }
     rl->addLayout(cards);
-    auto *compoundToggle = button("组合门 · 展开", "tool");
+    auto *compoundToggle = button(i18n::text("组合门 · 展开"), "tool");
     compoundToggle->setCheckable(true);
     rl->addWidget(compoundToggle);
     auto *compoundPanel = new QWidget;
     auto *compoundCards = new QGridLayout(compoundPanel);
     compoundCards->setContentsMargins(0, 0, 0, 0);
     compoundCards->setSpacing(9);
-    const QList<Definition> compounds = {{"double", "双连门", "两列单元", 3, 3},
-                                         {"triple", "三连门", "三列单元", 3, 3},
-                                         {"ladder", "日字门", "上下两层", 3, 3},
-                                         {"cube", "单层重力门", "立方框架", 3, 3},
-                                         {"cube-stack", "双层重力门", "两层立方框架", 3, 3}};
+    const QList<Definition> compounds = {
+        {"double", i18n::text("双连门"), i18n::text("两列单元"), 3, 3},
+        {"triple", i18n::text("三连门"), i18n::text("三列单元"), 3, 3},
+        {"ladder", i18n::text("日字门"), i18n::text("上下两层"), 3, 3},
+        {"cube", i18n::text("单层重力门"), i18n::text("立方框架"), 3, 3},
+        {"cube-stack", i18n::text("双层重力门"), i18n::text("两层立方框架"), 3, 3}};
     for (int i = 0; i < compounds.size(); ++i) {
         const auto d = compounds[i];
         auto *card = new GateCard(d.type, d.title, d.sub);
@@ -971,7 +1015,8 @@ void StudioWindow::setupUi() {
         compoundCards->addWidget(card, i / 2, i % 2);
         connect(card, &QPushButton::clicked, this, [this, d] {
             setPlacement(d.type, d.w, d.h);
-            notice_->setText("已选择" + d.title + " · 点击场景放置，选中后可调整通过格。");
+            notice_->setText(i18n::text("已选择") + d.title +
+                             i18n::text(" · 点击场景放置，选中后可调整通过格。"));
         });
     }
     compoundPanel->hide();
@@ -979,31 +1024,40 @@ void StudioWindow::setupUi() {
     connect(compoundToggle, &QPushButton::toggled, this,
             [compoundToggle, compoundPanel](bool open) {
                 compoundPanel->setVisible(open);
-                compoundToggle->setText(open ? "组合门 · 收起" : "组合门 · 展开");
+                compoundToggle->setText(open ? i18n::text("组合门 · 收起")
+                                             : i18n::text("组合门 · 展开"));
             });
-    auto *stock = label("标准杆件长 3.2 m\n截面 0.1 × 0.1 m\n选中组件可改颜色和尺寸", "subtle");
+    auto *stock =
+        label(i18n::text("标准杆件长 3.2 m\n截面 0.1 × 0.1 m\n选中组件可改颜色和尺寸"), "subtle");
     stock->setWordWrap(true);
     rl->addWidget(stock);
     rl->addStretch();
-    auto *sample = button("加载示例赛道", "secondary");
+    auto *sample = button(i18n::text("加载示例赛道"), "secondary");
     rl->addWidget(sample);
     connect(sample, &QPushButton::clicked, this, [this] { newProject(true); });
-    auto *png = button("导出赛道预览 PNG", "tool");
+    auto *png = button(i18n::text("导出赛道预览 PNG"), "tool");
     rl->addWidget(png);
     connect(png, &QPushButton::clicked, this, [this] { exportPng(); });
-    rl->addWidget(label("拖动空白处旋转视角\n滚轮缩放 · 中键平移", "workflow"));
+    rl->addWidget(label(i18n::text("拖动空白处旋转视角\n滚轮缩放 · 中键平移"), "workflow"));
     main->setStretchFactor(0, 0);
     main->setStretchFactor(1, 1);
     main->setStretchFactor(2, 0);
-    main->setSizes({252, 1030, 238});
+    main->setSizes(i18n::english() ? QList<int>{284, 998, 238} : QList<int>{252, 1030, 238});
+    for (auto *combo : left->findChildren<QComboBox *>()) {
+        // Long translated menu entries must not expand the scroll area's content
+        // beyond its visible width. The popup still shows the complete entry.
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(0);
+        combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
     statusBar()->setSizeGripEnabled(false);
-    statusBar()->showMessage("就绪 · 全部编辑在本机完成");
+    statusBar()->showMessage(i18n::text("就绪 · 全部编辑在本机完成"));
     recognitionTimer_ = new QTimer(this);
     recognitionTimer_->setInterval(200);
     connect(recognitionTimer_, &QTimer::timeout, this, [this] {
         if (recognizing_)
             statusBar()->showMessage(
-                QString("正在本地解析图片… %1 秒 · 可继续查看场景")
+                i18n::text("正在本地解析图片… %1 秒 · 可继续查看场景")
                     .arg((QDateTime::currentMSecsSinceEpoch() - recognitionStartedMs_) / 1000.0, 0,
                          'f', 1));
     });
@@ -1037,7 +1091,7 @@ void StudioWindow::setupUi() {
     };
     canvas_->onGestureEnd = [this] {
         if (!sameDocument(gestureBefore_, doc_))
-            pushEdit("移动门架", gestureBefore_, doc_);
+            pushEdit(i18n::text("移动门架"), gestureBefore_, doc_);
     };
     if (scene3d_) {
         scene3d_->onSelection = [this](QString id) { canvas_->selectGate(id); };
@@ -1054,6 +1108,60 @@ void StudioWindow::setupUi() {
             canvas_->refreshRoute();
         };
     }
+}
+
+void StudioWindow::changeLanguage(const QString &code) {
+    if (code == i18n::language())
+        return;
+    if (recognizing_) {
+        const QSignalBlocker blocked(language_);
+        language_->setCurrentIndex(i18n::english() ? 1 : 0);
+        statusBar()->showMessage(i18n::text("请等待图片识别完成后再切换语言。"), 5000);
+        return;
+    }
+    const auto document = doc_;
+    const int view = views_->currentIndex(), sequence = sequenceTabs_->currentIndex();
+    const bool snap = findChild<QCheckBox *>("snapToGrid")->isChecked();
+    const bool route = findChild<QCheckBox *>("showRoute")->isChecked();
+    const int speed = findChild<QComboBox *>("previewSpeed")->currentIndex();
+    const QString selected = selected_, step = selectedRouteStep_;
+    canvas_->onSelection = {};
+    canvas_->onGateMoved = {};
+    canvas_->onGestureBegin = {};
+    canvas_->onGestureEnd = {};
+    canvas_->onPlace = {};
+    canvas_->onZoom = {};
+    canvas_->setPreview(false);
+    canvas_->setDocument(nullptr);
+    if (scene3d_) {
+        scene3d_->onSelection = {};
+        scene3d_->onRouteSelection = {};
+        scene3d_->onGateMoved = {};
+        scene3d_->onGestureBegin = {};
+        scene3d_->onGestureEnd = {};
+        scene3d_->onPlace = {};
+        scene3d_->onZoom = {};
+        scene3d_->setPreview(false);
+        scene3d_->setDocument(nullptr);
+    }
+    delete recognitionTimer_;
+    recognitionTimer_ = nullptr;
+    delete takeCentralWidget();
+    delete statusBar();
+    canvas_ = nullptr;
+    scene3d_ = nullptr;
+    i18n::setLanguage(code, true);
+    setupUi();
+    selected_ = selected;
+    selectedRouteStep_ = step;
+    applyDocument(document);
+    views_->setCurrentIndex(std::min(view, views_->count() - 1));
+    sequenceTabs_->setCurrentIndex(sequence);
+    findChild<QCheckBox *>("snapToGrid")->setChecked(snap);
+    findChild<QCheckBox *>("showRoute")->setChecked(route);
+    findChild<QComboBox *>("previewSpeed")->setCurrentIndex(speed);
+    setWindowModified(!undo_.isClean());
+    fitViews();
 }
 
 void StudioWindow::fitViews() {
@@ -1130,12 +1238,12 @@ void StudioWindow::applyDocument(const TrackDocument &d) {
     takeoffY_->setValue(doc_.takeoff.position.y());
     takeoffZ_->setValue(doc_.takeoff.elevation);
     takeoffYaw_->setValue(doc_.takeoff.yaw);
-    takeoffStatus_->setText(doc_.takeoff.enabled ? "已设置独立起飞点，不占过门编号"
-                                                 : "尚未设置 · 导出前必须设置");
+    takeoffStatus_->setText(doc_.takeoff.enabled ? i18n::text("已设置独立起飞点，不占过门编号")
+                                                 : i18n::text("尚未设置 · 导出前必须设置"));
     recognizeButton_->setEnabled(!doc_.background.isNull() && !recognizing_);
     imageStatus_->setText(doc_.background.isNull()
-                              ? "支持 PNG / JPG / BMP\n可拖到小框、3D 场景或俯视图"
-                              : QString("已导入 %1 × %2 像素\n可先调整比例，再识别生成")
+                              ? i18n::text("支持 PNG / JPG / BMP\n可拖到小框、3D 场景或俯视图")
+                              : i18n::text("已导入 %1 × %2 像素\n可先调整比例，再识别生成")
                                     .arg(doc_.background.width())
                                     .arg(doc_.background.height()));
     canvas_->setDocument(&doc_);
@@ -1148,7 +1256,7 @@ void StudioWindow::applyDocument(const TrackDocument &d) {
         auto *item = new QListWidgetItem(
             QString("G%1  %2\n%3")
                 .arg(i + 1, 2, 10, QChar('0'))
-                .arg(gateTypeName(g.type), g.label.isEmpty() ? "Checkpoint" : g.label));
+                .arg(i18n::text(gateTypeName(g.type)), g.label.isEmpty() ? "Checkpoint" : g.label));
         item->setSizeHint(QSize(138, 52));
         order_->addItem(item);
         if (g.id == selected_)
@@ -1184,23 +1292,23 @@ void StudioWindow::updateStats() {
     }
     gateCount_->setText(QString("%1 / %2").arg(doc_.gates.size()).arg(passes));
     gateCount_->setToolTip(
-        turnChecks ? QString("另有 %1 个翻绕检查点，在模拟器中约束绕行顺序。").arg(turnChecks)
+        turnChecks ? i18n::text("另有 %1 个翻绕检查点，在模拟器中约束绕行顺序。").arg(turnChecks)
                    : QString());
     length_->setText(QString::number(routeLength(doc_), 'f', 1) + " m");
     const auto curve = routeCurve(doc_);
     QStringList hints;
     if (turnChecks)
         hints << (turnChecks == 1
-                      ? QString("T1：1 个辅助翻绕检查点，随赛道导出。")
-                      : QString("T1–T%1：%1 个辅助翻绕检查点，随赛道导出。").arg(turnChecks));
+                      ? i18n::text("T1：1 个辅助翻绕检查点，随赛道导出。")
+                      : i18n::text("T1–T%1：%1 个辅助翻绕检查点，随赛道导出。").arg(turnChecks));
     if (!curve.warnings.isEmpty()) {
-        QString message = curve.warnings.first();
+        QString message = i18n::text(curve.warnings.first());
         if (message.contains("连续切向"))
-            message = "部分连接转弯较急，可调整门位或绕行点。";
-        hints << "路线待校正：" + message;
+            message = i18n::text("部分连接转弯较急，可调整门位或绕行点。");
+        hints << i18n::text("路线待校正：") + message;
     }
     routeStatus_->setText(hints.join("  "));
-    routeStatus_->setToolTip(curve.warnings.join("\n"));
+    routeStatus_->setToolTip(i18n::messages(curve.warnings).join("\n"));
     routeStatus_->setVisible(!hints.isEmpty());
 }
 void StudioWindow::rebuildRouteList() {
@@ -1221,25 +1329,26 @@ void StudioWindow::rebuildRouteList() {
             }
         const bool ambiguous =
             step.extra.value("recognition").toObject().value("ambiguous").toBool();
-        auto *item = new QListWidgetItem(
-            QString("%1 · G%2 %3\n%4")
-                .arg(++number)
-                .arg(physical)
-                .arg(gateTypeName(gate->type), (ambiguous ? QString("？待校对 · ") : QString()) +
-                                                   passDescription(*gate, step)));
+        auto *item =
+            new QListWidgetItem(QString("%1 · G%2 %3\n%4")
+                                    .arg(++number)
+                                    .arg(physical)
+                                    .arg(i18n::text(gateTypeName(gate->type)),
+                                         (ambiguous ? i18n::text("？待校对 · ") : QString()) +
+                                             passDescription(*gate, step)));
         item->setData(Qt::UserRole, step.id);
         item->setData(Qt::UserRole + 1, step.gateId);
         item->setSizeHint(QSize(185, 54));
         item->setToolTip(
-            (ambiguous ? QString("图中路线存在遮挡，窗口及方向需要人工校对。\n") : QString()) +
+            (ambiguous ? i18n::text("图中路线存在遮挡，窗口及方向需要人工校对。\n") : QString()) +
             step.label);
         routeOrder_->addItem(item);
         if (step.id == selectedRouteStep_)
             selectedRow = routeOrder_->count() - 1;
     }
     routeOrder_->setCurrentRow(selectedRow);
-    sequenceTabs_->setTabText(0, QString("过门步骤 (%1)").arg(number));
-    sequenceTabs_->setTabText(1, QString("实体组件 (%1)").arg(doc_.gates.size()));
+    sequenceTabs_->setTabText(0, i18n::text("过门步骤 (%1)").arg(number));
+    sequenceTabs_->setTabText(1, i18n::text("实体组件 (%1)").arg(doc_.gates.size()));
     if (selectedRow < 0)
         selectedRouteStep_.clear();
 }
@@ -1277,7 +1386,7 @@ void StudioWindow::editRouteSelection() {
     const int column = std::max(0, passColumn_->currentIndex());
     const int level = std::max(0, passLevel_->currentIndex());
     const bool reverse = stepReverse_->currentIndex() == 1;
-    edit("调整本次穿越", [=](TrackDocument &d) {
+    edit(i18n::text("调整本次穿越"), [=](TrackDocument &d) {
         makeRouteExplicit(d);
         for (auto &step : d.routeSteps)
             if (step.id == id && step.kind == "pass") {
@@ -1307,7 +1416,7 @@ void StudioWindow::editRouteSelection() {
 void StudioWindow::addRoutePass() {
     const Gate *gate = findGate(doc_, selected_);
     if (!gate) {
-        statusBar()->showMessage("先选择一个实体门，再添加穿越步骤", 4000);
+        statusBar()->showMessage(i18n::text("先选择一个实体门，再添加穿越步骤"), 4000);
         return;
     }
     RouteStep step;
@@ -1317,7 +1426,7 @@ void StudioWindow::addRoutePass() {
     step.level = gate->extra.value("passLevel").toInt(0);
     const QString afterId = selectedRouteStep_;
     selectedRouteStep_ = step.id;
-    edit("新增一次穿越", [step, afterId](TrackDocument &d) {
+    edit(i18n::text("新增一次穿越"), [step, afterId](TrackDocument &d) {
         makeRouteExplicit(d);
         qsizetype at = d.routeSteps.size();
         for (qsizetype i = 0; i < d.routeSteps.size(); ++i)
@@ -1337,7 +1446,7 @@ void StudioWindow::duplicateRoutePass() {
             copy.id = newGateId();
             const QString afterId = step.id;
             selectedRouteStep_ = copy.id;
-            edit("重复本次穿越", [copy, afterId](TrackDocument &d) {
+            edit(i18n::text("重复本次穿越"), [copy, afterId](TrackDocument &d) {
                 makeRouteExplicit(d);
                 for (qsizetype i = 0; i < d.routeSteps.size(); ++i)
                     if (d.routeSteps[i].id == afterId) {
@@ -1353,7 +1462,7 @@ void StudioWindow::deleteRoutePass() {
         return;
     const QString id = selectedRouteStep_;
     selectedRouteStep_.clear();
-    edit("删除本次穿越", [id](TrackDocument &d) {
+    edit(i18n::text("删除本次穿越"), [id](TrackDocument &d) {
         makeRouteExplicit(d);
         for (qsizetype i = 0; i < d.routeSteps.size(); ++i)
             if (d.routeSteps[i].id == id) {
@@ -1371,7 +1480,7 @@ void StudioWindow::moveRoutePass(int delta) {
     if (selectedRouteStep_.isEmpty())
         return;
     const QString id = selectedRouteStep_;
-    edit("调整过门顺序", [id, delta](TrackDocument &d) {
+    edit(i18n::text("调整过门顺序"), [id, delta](TrackDocument &d) {
         makeRouteExplicit(d);
         QVector<QVector<RouteStep>> blocks;
         QVector<RouteStep> prefix;
@@ -1411,7 +1520,7 @@ void StudioWindow::applyManeuver() {
             selectedRouteStep_ = step.id;
             break;
         }
-    edit("替换此门的过门动作", [gateId, replacement, pattern](TrackDocument &d) {
+    edit(i18n::text("替换此门的过门动作"), [gateId, replacement, pattern](TrackDocument &d) {
         makeRouteExplicit(d);
         qsizetype first = d.routeSteps.size();
         for (qsizetype i = 0; i < d.routeSteps.size(); ++i)
@@ -1431,7 +1540,7 @@ void StudioWindow::applyManeuver() {
                 item.extra.insert("routePattern", pattern);
     });
     sequenceTabs_->setCurrentIndex(0);
-    notice_->setText("连续绕杆动作已应用；按编号检查入口、出口与升降。Ctrl+Z 可恢复。");
+    notice_->setText(i18n::text("连续绕杆动作已应用；按编号检查入口、出口与升降。Ctrl+Z 可恢复。"));
 }
 void StudioWindow::updateManeuverPreview() {
     const Gate *gate = findGate(doc_, selected_);
@@ -1447,12 +1556,23 @@ void StudioWindow::updateManeuverPreview() {
     const bool orbit = pattern == "orbit-bar-cw" || pattern == "orbit-bar-ccw";
     maneuverHint_->setText(
         pattern == "source-route"
-            ? "当前识别路线：按编号连续绕杆、换层和穿出；选择本项不会改动动作。"
+            ? i18n::text("当前识别路线：按编号连续绕杆、换层和穿出；选择本项不会改动动作。")
         : pattern.startsWith("upright-")
-            ? "边绕立柱边换层，从一个窗口直接接到另一个；不会回到原窗口后再升降。"
-        : orbit ? "独立整圈动作，不用于替代图中的连续换层。方向按组件左侧沿横杆看向右侧的视角。"
-        : pattern == "single" ? "选择动作预览，再点“应用动作”替换此门已有的穿越。"
-                              : "按图示绕过杆件；检查预览后点“应用动作”。");
+            ? i18n::text("边绕立柱边换层，从一个窗口直接接到另一个；不会回到原窗口后再升降。")
+        : orbit
+            ? i18n::text(
+                  "独立整圈动作，不用于替代图中的连续换层。方向按组件左侧沿横杆看向右侧的视角。")
+        : pattern == "single" ? i18n::text("选择动作预览，再点“应用动作”替换此门已有的穿越。")
+                              : i18n::text("按图示绕过杆件；检查预览后点“应用动作”。"));
+    if (pattern == "source-route") {
+        QStringList passages;
+        int ordinal = 0;
+        for (const auto &step : sourceSteps)
+            if (step.kind == "pass")
+                passages << QString("%1. %2").arg(++ordinal).arg(passDescription(*gate, step));
+        maneuverHint_->setText(i18n::text("过门顺序：%1").arg(passages.join(" → ")) + "\n" +
+                               i18n::text("请按编号核对进入面、出口和转向。"));
+    }
 }
 void StudioWindow::editTakeoff() {
     if (updating_)
@@ -1462,7 +1582,7 @@ void StudioWindow::editTakeoff() {
     if (position == doc_.takeoff.position && elevation == doc_.takeoff.elevation &&
         yaw == doc_.takeoff.yaw)
         return;
-    edit("设置独立起飞点", [=](TrackDocument &d) {
+    edit(i18n::text("设置独立起飞点"), [=](TrackDocument &d) {
         d.takeoff.enabled = true;
         d.takeoff.position = position;
         d.takeoff.elevation = elevation;
@@ -1506,9 +1626,9 @@ void StudioWindow::updateSelection(const QString &id) {
         passColumn_->clear();
         passLevel_->clear();
         for (int i = 0; i < frame.columns; ++i)
-            passColumn_->addItem(QString("第 %1 列").arg(i + 1));
+            passColumn_->addItem(i18n::text("第 %1 列").arg(i + 1));
         for (int i = 0; i < frame.levels; ++i)
-            passLevel_->addItem(QString("第 %1 层").arg(i + 1));
+            passLevel_->addItem(i18n::text("第 %1 层").arg(i + 1));
         passColumn_->setCurrentIndex(hasActiveStep ? activeStep.column
                                                    : gate->extra.value("passColumn").toInt(0));
         passLevel_->setCurrentIndex(hasActiveStep ? activeStep.level
@@ -1516,17 +1636,18 @@ void StudioWindow::updateSelection(const QString &id) {
         passColumn_->setVisible(frame.columns > 1);
         passLevel_->setVisible(frame.levels > 1);
         stepFace_->clear();
-        stepFace_->addItem("前面", "front");
-        stepFace_->addItem("背面", "back");
+        stepFace_->addItem(i18n::text("前面"), "front");
+        stepFace_->addItem(i18n::text("背面"), "back");
         if (frame.centerDepth > 0) {
-            stepFace_->addItem("左面", "left");
-            stepFace_->addItem("右面", "right");
-            stepFace_->addItem("顶面", "top");
-            stepFace_->addItem("底面", "bottom");
+            stepFace_->addItem(i18n::text("左面"), "left");
+            stepFace_->addItem(i18n::text("右面"), "right");
+            stepFace_->addItem(i18n::text("顶面"), "top");
+            stepFace_->addItem(i18n::text("底面"), "bottom");
         }
         stepFace_->setCurrentIndex(std::max(0, stepFace_->findData(activeStep.face)));
         stepReverse_->setCurrentIndex(activeStep.reverse ? 1 : 0);
-        stepSummary_->setText(hasActiveStep ? passDescription(*gate, activeStep) : "选择一次穿越");
+        stepSummary_->setText(hasActiveStep ? passDescription(*gate, activeStep)
+                                            : i18n::text("选择一次穿越"));
         maneuver_->clear();
         const bool hasSourceRoute = !gate->extra.value("recognition")
                                          .toObject()
@@ -1534,29 +1655,31 @@ void StudioWindow::updateSelection(const QString &id) {
                                          .toString()
                                          .isEmpty();
         if (hasSourceRoute)
-            maneuver_->addItem("当前识别路线 · 连续绕杆", "source-route");
-        maneuver_->addItem("单次穿越", "single");
+            maneuver_->addItem(i18n::text("当前识别路线 · 连续绕杆"), "source-route");
+        maneuver_->addItem(i18n::text("单次穿越"), "single");
         if (frame.levels > 1 && frame.centerDepth == 0) {
-            maneuver_->addItem("绕左立柱上升 · 下层进、上层出", "upright-left-up");
-            maneuver_->addItem("绕左立柱下降 · 上层进、下层出", "upright-left-down");
-            maneuver_->addItem("绕右立柱上升 · 下层进、上层出", "upright-right-up");
-            maneuver_->addItem("绕右立柱下降 · 上层进、下层出", "upright-right-down");
-            maneuver_->addItem("绕中横杆 · 下层进、上层出", "lower-upper");
-            maneuver_->addItem("绕中横杆 · 上层进、下层出", "upper-lower");
+            maneuver_->addItem(i18n::text("绕左立柱上升 · 下层进、上层出"), "upright-left-up");
+            maneuver_->addItem(i18n::text("绕左立柱下降 · 上层进、下层出"), "upright-left-down");
+            maneuver_->addItem(i18n::text("绕右立柱上升 · 下层进、上层出"), "upright-right-up");
+            maneuver_->addItem(i18n::text("绕右立柱下降 · 上层进、下层出"), "upright-right-down");
+            maneuver_->addItem(i18n::text("绕中横杆 · 下层进、上层出"), "lower-upper");
+            maneuver_->addItem(i18n::text("绕中横杆 · 上层进、下层出"), "upper-lower");
         }
         if (frame.columns > 1) {
-            maneuver_->addItem("左窗 → 右窗，交替穿越", "left-right");
-            maneuver_->addItem("右窗 → 左窗，交替穿越", "right-left");
+            maneuver_->addItem(i18n::text("左窗 → 右窗，交替穿越"), "left-right");
+            maneuver_->addItem(i18n::text("右窗 → 左窗，交替穿越"), "right-left");
         }
         if (frame.centerDepth > 0) {
-            maneuver_->addItem("重力门 · 圆弧俯冲穿出", "gravity-dive");
-            maneuver_->addItem("重力门 · 圆弧爬升穿顶", "gravity-climb");
+            maneuver_->addItem(i18n::text("重力门 · 圆弧俯冲穿出"), "gravity-dive");
+            maneuver_->addItem(i18n::text("重力门 · 圆弧爬升穿顶"), "gravity-climb");
         }
         if (frame.centerlineModel && frame.centerDepth == 0 && !pillar) {
             maneuver_->insertSeparator(maneuver_->count());
-            const QString bar = frame.levels > 1 ? "中横杆" : "顶横杆";
-            maneuver_->addItem("高级：绕" + bar + "独立整圈 ↻", "orbit-bar-cw");
-            maneuver_->addItem("高级：绕" + bar + "独立整圈 ↺", "orbit-bar-ccw");
+            const QString bar = frame.levels > 1 ? i18n::text("中横杆") : i18n::text("顶横杆");
+            maneuver_->addItem(i18n::text("高级：绕") + bar + i18n::text("独立整圈 ↻"),
+                               "orbit-bar-cw");
+            maneuver_->addItem(i18n::text("高级：绕") + bar + i18n::text("独立整圈 ↺"),
+                               "orbit-bar-ccw");
         }
         const QString currentPattern = gate->extra.value("routePattern").toString();
         maneuver_->setCurrentIndex(
@@ -1564,12 +1687,12 @@ void StudioWindow::updateSelection(const QString &id) {
                                                 ? QString("source-route")
                                                 : currentPattern)));
     }
-    widthLabel_->setText(pillar                  ? "柱体边长 / m"
-                         : frame.centerlineModel ? "横向中心距 / m"
-                                                 : "宽度 / m");
-    heightLabel_->setText(pillar                  ? "柱长 / m"
-                          : frame.centerlineModel ? "竖向中心距 / m"
-                                                  : "高度 / m");
+    widthLabel_->setText(pillar                  ? i18n::text("柱体边长 / m")
+                         : frame.centerlineModel ? i18n::text("横向中心距 / m")
+                                                 : i18n::text("宽度 / m"));
+    heightLabel_->setText(pillar                  ? i18n::text("柱长 / m")
+                          : frame.centerlineModel ? i18n::text("竖向中心距 / m")
+                                                  : i18n::text("高度 / m"));
     passSideLabel_->setVisible(pillar);
     passSide_->setVisible(pillar);
     if (pillar)
@@ -1577,8 +1700,8 @@ void StudioWindow::updateSelection(const QString &id) {
     for (auto *spin : {x_, z_, alt_, yaw_, width_, height_})
         spin->setEnabled(gate != nullptr);
     selectionTitle_->setText(
-        gate ? QString("%1属性 · G%2").arg(gateTypeName(gate->type)).arg(row + 1)
-             : "门架属性 · 未选择");
+        gate ? i18n::text("%1属性 · G%2").arg(i18n::text(gateTypeName(gate->type))).arg(row + 1)
+             : i18n::text("门架属性 · 未选择"));
     if (gate) {
         width_->setMinimum(pillar ? .01 : .2);
         height_->setMinimum(pillar ? .1 : .2);
@@ -1592,19 +1715,19 @@ void StudioWindow::updateSelection(const QString &id) {
         const int colorIndex = color_->findData(tint.name());
         color_->setCurrentIndex(colorIndex >= 0 ? colorIndex : color_->count() - 1);
         const auto nativeColor = nearestNativeBlockColor(tint);
-        colorMapping_->setText(
-            tint == nativeColor.color
-                ? QString("方块颜色：%1").arg(nativeColor.name)
-                : QString("自定义 %1 · 导出匹配：%2").arg(tint.name().toUpper(), nativeColor.name));
+        colorMapping_->setText(tint == nativeColor.color
+                                   ? i18n::text("方块颜色：%1").arg(i18n::text(nativeColor.name))
+                                   : i18n::text("自定义 %1 · 导出匹配：%2")
+                                         .arg(tint.name().toUpper(), i18n::text(nativeColor.name)));
         if (!pillar && !frame.centerlineModel)
-            colorMapping_->setText("导入原模型：此颜色用于编辑预览，导出保留原材质。");
+            colorMapping_->setText(i18n::text("导入原模型：此颜色用于编辑预览，导出保留原材质。"));
         if (pillar) {
-            dimensions_->setText(QString("截面 %1 × %1 m · 柱长 %2 m")
+            dimensions_->setText(i18n::text("截面 %1 × %1 m · 柱长 %2 m")
                                      .arg(gate->width, 0, 'f', 2)
                                      .arg(gate->height, 0, 'f', 2));
         } else if (frame.centerlineModel) {
             dimensions_->setText(
-                QString("杆件截面 %1 × %1 m\n横杆长 %2 m · 竖杆长 %3 m\n净开口 %4 × %5 m")
+                i18n::text("杆件截面 %1 × %1 m\n横杆长 %2 m · 竖杆长 %3 m\n净开口 %4 × %5 m")
                     .arg(frame.beamThickness, 0, 'f', 2)
                     .arg(frame.horizontalBeamLength, 0, 'f', 2)
                     .arg(frame.verticalBeamLength, 0, 'f', 2)
@@ -1613,12 +1736,12 @@ void StudioWindow::updateSelection(const QString &id) {
             if (frame.columns > 1 || frame.levels > 1 || frame.centerDepth > 0)
                 dimensions_->setText(
                     dimensions_->text() +
-                    QString("\n组合外形 %1 × %2 × %3 m\n各格尺寸相同，复杂穿越顺序需校对")
+                    i18n::text("\n组合外形 %1 × %2 × %3 m\n各格尺寸相同，复杂穿越顺序需校对")
                         .arg(frame.outerWidth, 0, 'f', 2)
                         .arg(frame.outerHeight, 0, 'f', 2)
                         .arg(frame.outerDepth, 0, 'f', 2));
         } else {
-            dimensions_->setText("导入组件：原模型尺寸约定");
+            dimensions_->setText(i18n::text("导入组件：原模型尺寸约定"));
         }
     }
     order_->setCurrentRow(row);
@@ -1630,17 +1753,17 @@ void StudioWindow::updateSelection(const QString &id) {
     updating_ = false;
     updateManeuverPreview();
     statusBar()->showMessage(
-        gate
-            ? QString("已选中 #%1 %2 · 再次按住组件或脚下光圈可移动 · Q/E 旋转")
-                  .arg(row + 1)
-                  .arg(gateTypeName(gate->type))
-            : QString("先单击组件选中，再按住组件或光圈拖动 · 右键旋转视角 · 中键平移 · 滚轮缩放"));
+        gate ? i18n::text("已选中 #%1 %2 · 再次按住组件或脚下光圈可移动 · Q/E 旋转")
+                   .arg(row + 1)
+                   .arg(i18n::text(gateTypeName(gate->type)))
+             : i18n::text(
+                   "先单击组件选中，再按住组件或光圈拖动 · 右键旋转视角 · 中键平移 · 滚轮缩放"));
 }
 void StudioWindow::editColor(const QColor &color) {
     if (updating_ || selected_.isEmpty() || !color.isValid())
         return;
     const QString id = selected_;
-    edit("调整组件颜色", [id, color](TrackDocument &d) {
+    edit(i18n::text("调整组件颜色"), [id, color](TrackDocument &d) {
         for (auto &g : d.gates)
             if (g.id == id)
                 setGateColor(g, color);
@@ -1653,7 +1776,7 @@ void StudioWindow::editSelection() {
     const auto pos = QPointF(x_->value(), z_->value());
     const double alt = alt_->value(), yaw = yaw_->value(), w = width_->value(),
                  h = height_->value();
-    edit("调整门架属性", [=](TrackDocument &d) {
+    edit(i18n::text("调整门架属性"), [=](TrackDocument &d) {
         for (auto &g : d.gates)
             if (g.id == id) {
                 g.position = pos;
@@ -1666,19 +1789,20 @@ void StudioWindow::editSelection() {
 }
 void StudioWindow::addGate(const QString &type, QPointF p, double w, double h) {
     if (type == "__takeoff") {
-        edit("放置独立起飞点", [p](TrackDocument &d) {
+        edit(i18n::text("放置独立起飞点"), [p](TrackDocument &d) {
             d.takeoff.enabled = true;
             d.takeoff.position = p;
         });
         setPlacement({});
-        notice_->setText("已放置独立起飞点；可在左侧展开“坐标与朝向”校准基点高度和机头方向。");
+        notice_->setText(
+            i18n::text("已放置独立起飞点；可在左侧展开“坐标与朝向”校准基点高度和机头方向。"));
         return;
     }
     Gate g = makeGate(type, w, h);
     g.position = p;
     selected_ = g.id;
     selectedRouteStep_.clear();
-    edit("放置门架", [g](TrackDocument &d) {
+    edit(i18n::text("放置门架"), [g](TrackDocument &d) {
         d.gates.append(g);
         if (d.routeStepsDefined || !d.routeSteps.isEmpty()) {
             RouteStep step;
@@ -1696,7 +1820,7 @@ void StudioWindow::duplicateGate() {
             g.position += QPointF(2, 2);
             selected_ = g.id;
             selectedRouteStep_.clear();
-            edit("复制门架", [g](TrackDocument &d) {
+            edit(i18n::text("复制门架"), [g](TrackDocument &d) {
                 d.gates.append(g);
                 if (d.routeStepsDefined || !d.routeSteps.isEmpty()) {
                     RouteStep step;
@@ -1716,7 +1840,7 @@ void StudioWindow::deleteGate() {
         return;
     selected_.clear();
     selectedRouteStep_.clear();
-    edit("删除门架", [id](TrackDocument &d) {
+    edit(i18n::text("删除门架"), [id](TrackDocument &d) {
         d.routeSteps.erase(
             std::remove_if(d.routeSteps.begin(), d.routeSteps.end(),
                            [id](const RouteStep &step) { return step.gateId == id; }),
@@ -1730,7 +1854,7 @@ void StudioWindow::deleteGate() {
 }
 void StudioWindow::rotateGate(double delta) {
     const QString id = selected_;
-    edit("旋转门架", [id, delta](TrackDocument &d) {
+    edit(i18n::text("旋转门架"), [id, delta](TrackDocument &d) {
         for (auto &g : d.gates)
             if (g.id == id)
                 g.yaw = std::remainder(g.yaw + delta, 360.);
@@ -1738,7 +1862,7 @@ void StudioWindow::rotateGate(double delta) {
 }
 void StudioWindow::moveOrder(int delta) {
     const QString id = selected_;
-    edit("调整通过顺序", [id, delta](TrackDocument &d) {
+    edit(i18n::text("调整通过顺序"), [id, delta](TrackDocument &d) {
         for (int i = 0; i < d.gates.size(); ++i)
             if (d.gates[i].id == id) {
                 int j = i + delta;
@@ -1749,13 +1873,13 @@ void StudioWindow::moveOrder(int delta) {
     });
 }
 void StudioWindow::fail(const QString &message) {
-    QMessageBox::warning(this, "OpenTrack Studio", message);
+    QMessageBox::warning(this, "OpenTrack Studio", i18n::text(message));
 }
 bool StudioWindow::maybeSave() {
     if (undo_.isClean())
         return true;
     const auto answer = QMessageBox::question(
-        this, "保存工程", "当前工程有未保存的修改，是否保存？",
+        this, i18n::text("保存工程"), i18n::text("当前工程有未保存的修改，是否保存？"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Save);
     if (answer == QMessageBox::Cancel)
         return false;
@@ -1769,17 +1893,20 @@ void StudioWindow::newProject(bool demo) {
     path_.clear();
     selected_.clear();
     undo_.clear();
-    applyDocument(demo ? demoDocument() : TrackDocument());
+    auto fresh = demo ? demoDocument() : TrackDocument();
+    fresh.name = i18n::text(fresh.name); // User/opened project names are never translated.
+    applyDocument(fresh);
     undo_.setClean();
     fitViews();
-    notice_->setText(demo ? "示例赛道已加载 · 先点击选中门架，再按住拖动。"
-                          : "新工程 · 导入赛道图开始识别，或从右侧组件库放置门架。");
+    notice_->setText(demo ? i18n::text("示例赛道已加载 · 先点击选中门架，再按住拖动。")
+                          : i18n::text("新工程 · 导入赛道图开始识别，或从右侧组件库放置门架。"));
 }
 void StudioWindow::openProject() {
     if (!maybeSave())
         return;
-    const QString path = QFileDialog::getOpenFileName(this, "打开工程或 VelociDrone 赛道", {},
-                                                      "工程 / 赛道 (*.otproj *.trk);;所有文件 (*)");
+    const QString path =
+        QFileDialog::getOpenFileName(this, i18n::text("打开工程或 VelociDrone 赛道"), {},
+                                     i18n::text("工程 / 赛道 (*.otproj *.trk);;所有文件 (*)"));
     if (!path.isEmpty())
         openPath(path);
 }
@@ -1797,15 +1924,15 @@ bool StudioWindow::openPath(const QString &p) {
     applyDocument(d);
     undo_.setClean();
     fitViews();
-    notice_->setText(trk ? "VelociDrone 赛道已导入 · 可编辑后导出。"
-                         : "工程已打开 · 底图、门架和通过顺序已恢复。");
+    notice_->setText(trk ? i18n::text("VelociDrone 赛道已导入 · 可编辑后导出。")
+                         : i18n::text("工程已打开 · 底图、门架和通过顺序已恢复。"));
     return true;
 }
 bool StudioWindow::save(bool as) {
     QString p = path_;
     if (as || p.isEmpty())
-        p = QFileDialog::getSaveFileName(this, "保存工程", doc_.name + ".otproj",
-                                         "OpenTrack 工程 (*.otproj)");
+        p = QFileDialog::getSaveFileName(this, i18n::text("保存工程"), doc_.name + ".otproj",
+                                         i18n::text("OpenTrack 工程 (*.otproj)"));
     if (p.isEmpty())
         return false;
     if (!p.endsWith(".otproj", Qt::CaseInsensitive))
@@ -1817,14 +1944,14 @@ bool StudioWindow::save(bool as) {
     }
     path_ = p;
     undo_.setClean();
-    statusBar()->showMessage("工程已保存：" + QFileInfo(p).fileName(), 5000);
+    statusBar()->showMessage(i18n::text("工程已保存：") + QFileInfo(p).fileName(), 5000);
     return true;
 }
 void StudioWindow::exportTrack() {
     if (!doc_.takeoff.enabled) {
         setPlacement("__takeoff", .8, .1);
-        notice_->setText("尚未设置独立起飞点。请在地面单击放置起飞架，再导出赛道。");
-        statusBar()->showMessage("起飞点必须单独设置，不能用第一个门代替", 8000);
+        notice_->setText(i18n::text("尚未设置独立起飞点。请在地面单击放置起飞架，再导出赛道。"));
+        statusBar()->showMessage(i18n::text("起飞点必须单独设置，不能用第一个门代替"), 8000);
         return;
     }
     const auto steps = effectiveRouteSteps(doc_);
@@ -1832,14 +1959,14 @@ void StudioWindow::exportTrack() {
             return step.kind == "pass" ||
                    (step.kind == "guide" && step.extra.value("raceCheckpoint").toBool());
         })) {
-        fail("请先设置穿越步骤或翻绕检查点。");
+        fail(i18n::text("请先设置穿越步骤或翻绕检查点。"));
         return;
     }
     QString p = QFileDialog::getSaveFileName(
-        this, "导出 VelociDrone 赛道",
+        this, i18n::text("导出 VelociDrone 赛道"),
         QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation))
             .filePath(doc_.name + ".trk"),
-        "VelociDrone 赛道 (*.trk)");
+        i18n::text("VelociDrone 赛道 (*.trk)"));
     if (p.isEmpty())
         return;
     if (!p.endsWith(".trk", Qt::CaseInsensitive))
@@ -1849,13 +1976,13 @@ void StudioWindow::exportTrack() {
         fail(error);
         return;
     }
-    notice_->setText("已导出 .trk · 在 VelociDrone 的 Track Editor → Import Track "
-                     "中导入。请在模拟器内检查高度、朝向和通过顺序。");
-    statusBar()->showMessage("赛道已导出：" + p, 8000);
+    notice_->setText(i18n::text("已导出 .trk · 在 VelociDrone 的 Track Editor → Import Track "
+                                "中导入。请在模拟器内检查高度、朝向和通过顺序。"));
+    statusBar()->showMessage(i18n::text("赛道已导出：") + p, 8000);
 }
 void StudioWindow::exportPng() {
-    QString p =
-        QFileDialog::getSaveFileName(this, "导出赛道预览", doc_.name + ".png", "PNG 图片 (*.png)");
+    QString p = QFileDialog::getSaveFileName(this, i18n::text("导出赛道预览"), doc_.name + ".png",
+                                             i18n::text("PNG 图片 (*.png)"));
     if (p.isEmpty())
         return;
     if (!p.endsWith(".png", Qt::CaseInsensitive))
@@ -1863,9 +1990,9 @@ void StudioWindow::exportPng() {
     if (!(scene3d_ && views_->currentWidget() == scene3d_ ? scene3d_->exportImage()
                                                           : canvas_->exportImage())
              .save(p))
-        fail("图片保存失败。");
+        fail(i18n::text("图片保存失败。"));
     else
-        statusBar()->showMessage("赛道预览已保存", 5000);
+        statusBar()->showMessage(i18n::text("赛道预览已保存"), 5000);
 }
 void StudioWindow::importPhotosWithAi(const QStringList &paths) {
     AiVisionDialog dialog(this);
@@ -1873,7 +2000,7 @@ void StudioWindow::importPhotosWithAi(const QStringList &paths) {
     if (!paths.isEmpty()) {
         dialog.setImagePaths(paths);
     } else if (!doc_.background.isNull() && previewFiles.isValid()) {
-        const QString current = previewFiles.filePath("当前赛道图.png");
+        const QString current = previewFiles.filePath(i18n::text("当前赛道图.png"));
         if (doc_.background.save(current))
             dialog.setImagePaths({current});
     }
@@ -1881,16 +2008,17 @@ void StudioWindow::importPhotosWithAi(const QStringList &paths) {
         return;
     const auto &result = dialog.result();
     selected_.clear();
-    pushEdit("AI 照片生成赛道", doc_, result.document);
+    pushEdit(i18n::text("AI 照片生成赛道"), doc_, result.document);
     fitViews();
     notice_->setText(
-        QString("AI 草稿 · %1 个门架 · 请校对真实距离、高度、朝向和通过顺序，修改可撤销。")
+        i18n::text("AI 草稿 · %1 个门架 · 请校对真实距离、高度、朝向和通过顺序，修改可撤销。")
             .arg(doc_.gates.size()));
-    notice_->setToolTip("<pre>" + result.warnings.join("\n").toHtmlEscaped() + "</pre>");
+    notice_->setToolTip("<pre>" + i18n::messages(result.warnings).join("\n").toHtmlEscaped() +
+                        "</pre>");
 }
 void StudioWindow::importImage() {
-    const QString p = QFileDialog::getOpenFileName(this, "导入赛道俯视图", {},
-                                                   "赛道图片 (*.png *.jpg *.jpeg *.bmp)");
+    const QString p = QFileDialog::getOpenFileName(
+        this, i18n::text("导入赛道俯视图"), {}, i18n::text("赛道图片 (*.png *.jpg *.jpeg *.bmp)"));
     if (p.isEmpty())
         return;
     importImagePath(p);
@@ -1910,8 +2038,8 @@ void StudioWindow::startRecognition(bool confirmReplace) {
     if (recognizing_ || doc_.background.isNull())
         return;
     if (confirmReplace && !doc_.gates.isEmpty()) {
-        if (QMessageBox::question(this, "生成赛道",
-                                  "识别结果将替换当前门架，可通过撤销恢复。继续生成？",
+        if (QMessageBox::question(this, i18n::text("生成赛道"),
+                                  i18n::text("识别结果将替换当前门架，可通过撤销恢复。继续生成？"),
                                   QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
             return;
     }
@@ -1920,7 +2048,7 @@ void StudioWindow::startRecognition(bool confirmReplace) {
 void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &image) {
     recognizing_ = true;
     recognizeButton_->setEnabled(false);
-    recognizeButton_->setText("正在本地生成…");
+    recognizeButton_->setText(i18n::text("正在本地生成…"));
     recognitionStartedMs_ = QDateTime::currentMSecsSinceEpoch();
     recognitionTimer_->start();
     const quint64 serial = ++recognitionSerial_;
@@ -1929,7 +2057,7 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
     options.autoScale = autoScale_->isChecked();
     options.metersPerPixel = scale_->value();
     auto *watcher = new QFutureWatcher<ImageWork>(this);
-    statusBar()->showMessage("正在读取并解析赛道图…");
+    statusBar()->showMessage(i18n::text("正在读取并解析赛道图…"));
     connect(
         watcher, &QFutureWatcher<ImageWork>::finished, this,
         [this, watcher, revision, serial, imagePath] {
@@ -1940,9 +2068,10 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
             recognizing_ = false;
             recognitionTimer_->stop();
             recognizeButton_->setEnabled(!doc_.background.isNull());
-            recognizeButton_->setText("识别图片并生成赛道");
+            recognizeButton_->setText(i18n::text("识别图片并生成赛道"));
             if (revision != revision_) {
-                notice_->setText("识别期间工程已改变，本次结果已丢弃。请在当前工程重新识别。");
+                notice_->setText(
+                    i18n::text("识别期间工程已改变，本次结果已丢弃。请在当前工程重新识别。"));
                 return;
             }
             if (!work.error.isEmpty()) {
@@ -1951,15 +2080,15 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
             }
             const auto &result = work.recognition;
             if (result.detectedCount == 0 && imagePath.isEmpty()) {
-                notice_->setText(
-                    "没有可靠的识别结果，当前组件已保留。可用“AI 解析当前图”生成预览草稿。");
+                notice_->setText(i18n::text(
+                    "没有可靠的识别结果，当前组件已保留。可用“AI 解析当前图”生成预览草稿。"));
                 return;
             }
             auto after = result.document;
             after.name = imagePath.isEmpty() ? doc_.name : QFileInfo(imagePath).completeBaseName();
             after.scenery = doc_.scenery;
             selected_.clear();
-            pushEdit("图片生成赛道", doc_, after);
+            pushEdit(i18n::text("图片生成赛道"), doc_, after);
             recognizeButton_->setEnabled(!doc_.background.isNull());
             fitViews();
             int passes = 0;
@@ -1969,16 +2098,17 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
                 after.extra.value("recognition").toObject().value("ambiguousPassageGroups").toInt();
             notice_->setText(
                 result.detectedCount
-                    ? QString("已生成 %1 个实体 / %2 次过门 · 本地 %3 秒 · %4")
+                    ? i18n::text("已生成 %1 个实体 / %2 次过门 · 本地 %3 秒 · %4")
                           .arg(result.detectedCount)
                           .arg(passes)
                           .arg(work.elapsedMs / 1000.0, 0, 'f', 2)
-                          .arg(uncertain ? QString("%1 组遮挡待校对；请核对三维高度与绕行。")
+                          .arg(uncertain ? i18n::text("%1 组遮挡待校对；请核对三维高度与绕行。")
                                                .arg(uncertain)
-                                         : QString("请核对三维高度与通过顺序。"))
-                    : QString("图片已导入，未生成不可靠的组件。可点击“AI 解析当前图”继续。"));
-            notice_->setToolTip("<pre>" + result.warnings.join("\n").toHtmlEscaped() + "</pre>");
-            statusBar()->showMessage("导入完成 · Ctrl+Z 可恢复导入前的工程", 6000);
+                                         : i18n::text("请核对三维高度与通过顺序。"))
+                    : i18n::text("图片已导入，未生成不可靠的组件。可点击“AI 解析当前图”继续。"));
+            notice_->setToolTip(
+                "<pre>" + i18n::messages(result.warnings).join("\n").toHtmlEscaped() + "</pre>");
+            statusBar()->showMessage(i18n::text("导入完成 · Ctrl+Z 可恢复导入前的工程"), 6000);
         });
     watcher->setFuture(QtConcurrent::run([imagePath, image, options] {
         QElapsedTimer timer;
@@ -1990,7 +2120,7 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
             reader.setAutoTransform(true);
             const QSize size = reader.size();
             if (!size.isValid() || qint64(size.width()) * size.height() > 80000000) {
-                work.error = "图片尺寸无效或超过限制。";
+                work.error = i18n::text("图片尺寸无效或超过限制。");
                 return work;
             }
             if (size.width() > 3200 || size.height() > 3200)
@@ -1998,7 +2128,7 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
             input = reader.read();
         }
         if (input.isNull()) {
-            work.error = "无法读取图片，请检查文件是否完整。";
+            work.error = i18n::text("无法读取图片，请检查文件是否完整。");
             return work;
         }
         work.recognition = recognizeTrack(input, options);
@@ -2031,7 +2161,7 @@ bool StudioWindow::eventFilter(QObject *target, QEvent *event) {
             drag->accept();
         } else {
             drag->ignore();
-            statusBar()->showMessage(checked.error, 5000);
+            statusBar()->showMessage(i18n::text(checked.error), 5000);
         }
         return true;
     }
@@ -2045,7 +2175,7 @@ bool StudioWindow::eventFilter(QObject *target, QEvent *event) {
         highlight(false);
         const auto checked = inspectImageDrop(drop->mimeData());
         if (!checked.supported || !drop->possibleActions().testFlag(Qt::CopyAction)) {
-            statusBar()->showMessage(checked.error, 5000);
+            statusBar()->showMessage(i18n::text(checked.error), 5000);
             drop->ignore();
             return true;
         }
@@ -2099,6 +2229,133 @@ QImage makeExampleImage() {
     p.drawText(QRect(35, 30, 700, 32), "OpenTrack Studio  /  Example overhead track plan");
     return img;
 }
+bool StudioWindow::runLanguageSmokeTest(const QString &dir) {
+    QSettings preferences;
+    const bool hadPreference = preferences.contains("interface/language");
+    const QVariant savedPreference = preferences.value("interface/language");
+    const QString initialLanguage = i18n::language();
+    struct RestorePreference {
+        bool had;
+        QVariant value;
+        QString language;
+        ~RestorePreference() {
+            i18n::setLanguage(language);
+            QSettings settings;
+            if (had)
+                settings.setValue("interface/language", value);
+            else
+                settings.remove("interface/language");
+        }
+    } restore{hadPreference, savedPreference, initialLanguage};
+    const auto original = doc_;
+    undo_.clear();
+    edit("Language smoke edit", [](TrackDocument &document) {
+        document.name = QString::fromUtf8("User-defined 用户 project");
+        document.gates[0].position += QPointF(1.5, .5);
+    });
+    routeOrder_->setCurrentRow(0);
+    findChild<QCheckBox *>("snapToGrid")->setChecked(false);
+    findChild<QCheckBox *>("showRoute")->setChecked(false);
+    findChild<QComboBox *>("previewSpeed")->setCurrentIndex(2);
+    const auto edited = toJson(doc_);
+    const QString selected = selected_, step = selectedRouteStep_;
+    const int undoCount = undo_.count(), undoIndex = undo_.index();
+    changeLanguage("en");
+    if (i18n::catalog().size() < 500 || toJson(doc_) != edited || selected_ != selected ||
+        selectedRouteStep_ != step || undo_.count() != undoCount || undo_.index() != undoIndex ||
+        !isWindowModified() || name_->text() != QString::fromUtf8("User-defined 用户 project") ||
+        findChild<QCheckBox *>("snapToGrid")->isChecked() ||
+        findChild<QCheckBox *>("showRoute")->isChecked() ||
+        findChild<QComboBox *>("previewSpeed")->currentIndex() != 2)
+        return false;
+    const QRegularExpression han(QStringLiteral("[\\x{3400}-\\x{9fff}]"));
+    const auto englishWidgets = [&](QWidget *root) {
+        for (auto *widget : root->findChildren<QWidget *>()) {
+            if (widget->objectName() == "languageSelector")
+                continue; // Language endonyms are intentionally stable.
+            QStringList visibleText;
+            if (auto *value = qobject_cast<QLabel *>(widget))
+                visibleText << value->text();
+            if (auto *value = qobject_cast<QAbstractButton *>(widget))
+                visibleText << value->text();
+            if (auto *value = qobject_cast<QGroupBox *>(widget))
+                visibleText << value->title();
+            if (auto *value = qobject_cast<QComboBox *>(widget))
+                for (int i = 0; i < value->count(); ++i)
+                    visibleText << value->itemText(i);
+            if (auto *value = qobject_cast<QTabWidget *>(widget))
+                for (int i = 0; i < value->count(); ++i)
+                    visibleText << value->tabText(i);
+            if (auto *value = qobject_cast<QLineEdit *>(widget))
+                visibleText << value->placeholderText(); // Never inspect user text or credentials.
+            if (auto *value = qobject_cast<QPlainTextEdit *>(widget))
+                visibleText << value->placeholderText();
+            visibleText << widget->toolTip();
+            for (const auto &text : visibleText)
+                if (text.contains(han)) {
+                    qWarning() << "Untranslated generated UI text in"
+                               << widget->metaObject()->className() << widget->objectName();
+                    return false;
+                }
+        }
+        return true;
+    };
+    if (!englishWidgets(this))
+        return false;
+    {
+        AiVisionDialog dialog(this, false); // No credential read or network request in this test.
+        if (!englishWidgets(&dialog))
+            return false;
+    }
+    if (i18n::text(QString::fromUtf8("字段 position 必须是数字。")) !=
+            "Field position must be a number." ||
+        i18n::text(QString::fromUtf8("组件颜色必须是不透明的 RGB 颜色。")) !=
+            "Obstacle color must be an opaque RGB color.")
+        return false;
+    QDir().mkpath(dir);
+    QApplication::processEvents();
+    QEventLoop renderEvents;
+    QTimer::singleShot(120, &renderEvents, &QEventLoop::quit);
+    renderEvents.exec();
+    const auto capture =
+        QGuiApplication::platformName() == "windows" ? screen()->grabWindow(winId()) : grab();
+    if (!capture.save(dir + "/english-ui.png"))
+        return false;
+    changeLanguage("zh");
+    if (toJson(doc_) != edited || selected_ != selected || selectedRouteStep_ != step ||
+        undo_.count() != undoCount || undo_.index() != undoIndex ||
+        findChild<QCheckBox *>("snapToGrid")->isChecked() ||
+        findChild<QCheckBox *>("showRoute")->isChecked() ||
+        findChild<QComboBox *>("previewSpeed")->currentIndex() != 2)
+        return false;
+    undo_.undo();
+    if (!sameDocument(doc_, original))
+        return false;
+    undo_.redo();
+    if (toJson(doc_) != edited)
+        return false;
+    const auto buttons = findChildren<QPushButton *>();
+    const bool chineseControls =
+        std::any_of(buttons.cbegin(), buttons.cend(), [](QPushButton *button) {
+            return button->text() == QString::fromUtf8("保存工程");
+        });
+    if (!chineseControls)
+        return false;
+    QFile report(dir + "/language-report.json");
+    if (!report.open(QIODevice::WriteOnly))
+        return false;
+    report.write(QJsonDocument(QJsonObject{{"englishMainAndAiControls", true},
+                                           {"liveSwitchPreservesProjectSelectionAndUndo", true},
+                                           {"liveSwitchPreservesEditingControls", true},
+                                           {"userTextUnchanged", true},
+                                           {"credentialRead", false},
+                                           {"networkRequests", false},
+                                           {"preferenceRestored", true}})
+                     .toJson());
+    undo_.clear();
+    return true;
+}
+
 bool StudioWindow::runSmokeTest(const QString &dir) {
     QDir().mkpath(dir);
     QFile::remove(dir + "/failure.json");
@@ -2210,7 +2467,7 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
             }
         return false;
     };
-    if (!clickButton("应用动作") || doc_.gates.size() != 3 || routeOrder_->count() != 4)
+    if (!clickButton(i18n::text("应用动作")) || doc_.gates.size() != 3 || routeOrder_->count() != 4)
         return smokeFailure(__LINE__);
     QVector<RouteStep> ladderPasses;
     for (const auto &step : effectiveRouteSteps(doc_))
@@ -2224,7 +2481,7 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     if (uprightPattern < 0)
         return smokeFailure(__LINE__);
     maneuver_->setCurrentIndex(uprightPattern);
-    if (!clickButton("应用动作") || routeOrder_->count() != 4)
+    if (!clickButton(i18n::text("应用动作")) || routeOrder_->count() != 4)
         return smokeFailure(__LINE__);
     QVector<RouteStep> threadedPasses;
     for (const auto &step : effectiveRouteSteps(doc_))
@@ -2239,7 +2496,7 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     if (!saveProject(dir + "/threading-demo.otproj", doc_, &error) ||
         !exportVelocidrone(dir + "/threading-demo.trk", doc_, &error))
         return smokeFailure(__LINE__);
-    edit("准备识别动作预览检查", [](TrackDocument &document) {
+    edit(i18n::text("准备识别动作预览检查"), [](TrackDocument &document) {
         auto &gate = document.gates[0];
         gate.extra.insert("recognition", QJsonObject{{"routeEvidence", "synthetic-source-stroke"}});
         gate.extra.remove("routePattern");
@@ -2266,13 +2523,13 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     if (orbitPattern < 0)
         return smokeFailure(__LINE__);
     maneuver_->setCurrentIndex(orbitPattern);
-    if (maneuverPreview_->isHidden() || !clickButton("应用动作") || doc_.gates.size() != 3 ||
-        routeOrder_->count() != 5)
+    if (maneuverPreview_->isHidden() || !clickButton(i18n::text("应用动作")) ||
+        doc_.gates.size() != 3 || routeOrder_->count() != 5)
         return smokeFailure(__LINE__);
     int turnChecks = 0;
     for (const auto &step : effectiveRouteSteps(doc_))
         turnChecks += step.kind == "guide" && step.extra.value("raceCheckpoint").toBool();
-    if (turnChecks != 2 || !routeStatus_->text().contains("2 个辅助翻绕检查点") ||
+    if (turnChecks != 2 || !routeStatus_->text().contains(i18n::text("2 个辅助翻绕检查点")) ||
         doc_.gates[0].extra.value("routePattern") != QJsonValue("orbit-bar-cw"))
         return smokeFailure(__LINE__);
     if (!saveProject(dir + "/circle-demo.otproj", doc_, &error) ||
@@ -2290,13 +2547,13 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
             editedDirection = step.reverse && step.level == 1 && step.face == "back";
     if (!editedDirection || doc_.gates.size() != 3)
         return smokeFailure(__LINE__);
-    if (!clickButton("复制选择") || routeOrder_->count() != 5 || doc_.gates.size() != 3)
+    if (!clickButton(i18n::text("复制选择")) || routeOrder_->count() != 5 || doc_.gates.size() != 3)
         return smokeFailure(__LINE__);
     const QString repeatedPass = selectedRouteStep_;
     moveRoutePass(1);
     if (selectedRouteStep_ != repeatedPass || routeOrder_->currentRow() != 3)
         return smokeFailure(__LINE__);
-    if (!clickButton("删除选择") || routeOrder_->count() != 4 || doc_.gates.size() != 3)
+    if (!clickButton(i18n::text("删除选择")) || routeOrder_->count() != 4 || doc_.gates.size() != 3)
         return smokeFailure(__LINE__);
     undo_.undo();
     if (routeOrder_->count() != 5 || doc_.gates.size() != 3)
@@ -2305,13 +2562,13 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
     sequenceTabs_->setCurrentIndex(1);
     if (!selectedRouteStep_.isEmpty() || !stepPanel_->isHidden())
         return smokeFailure(__LINE__);
-    if (!clickButton("复制选择") || doc_.gates.size() != 4 || routeOrder_->count() != 6)
+    if (!clickButton(i18n::text("复制选择")) || doc_.gates.size() != 4 || routeOrder_->count() != 6)
         return smokeFailure(__LINE__);
     undo_.undo();
     const QString removedGate = doc_.gates[0].id;
     canvas_->selectGate(removedGate);
     updateSelection(removedGate);
-    if (!clickButton("删除选择") || doc_.gates.size() != 2)
+    if (!clickButton(i18n::text("删除选择")) || doc_.gates.size() != 2)
         return smokeFailure(__LINE__);
     for (const auto &step : effectiveRouteSteps(doc_))
         if (step.gateId == removedGate)

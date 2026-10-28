@@ -1,6 +1,10 @@
 # 快速上手
 
-OpenTrack Studio 0.1.6 无需应用账号登录。先打开合成示例 [threading-demo.otproj](../examples/threading-demo.otproj)，看绕立柱同时升降、直接进入另一层开口的动作；它不是先回原窗口再升高。3D 使用实体地面，参考图只在俯视图按需显示。
+[English](quickstart.en.md) | 简体中文
+
+使用语言选择器可切换 English / 简体中文，选择会保存在本机；切换保留工程、选中步骤和撤销记录。新源码及贡献采用 GPL-3.0-or-later，参见 [许可证说明](licensing.md)。
+
+OpenTrack Studio 0.1.7 无需应用账号登录。先打开合成示例 [threading-demo.otproj](../examples/threading-demo.otproj)，看绕立柱同时升降、直接进入另一层开口的动作；它不是先回原窗口再升高。3D 使用实体地面，参考图只在俯视图按需显示。
 
 ![连续绕立柱并换层的 3D 预览](threading-preview.png)
 

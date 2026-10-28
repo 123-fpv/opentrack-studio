@@ -1,4 +1,5 @@
 #include "canvas.h"
+#include "language.h"
 #include <QGraphicsObject>
 #include <QGraphicsScene>
 #include <QGraphicsSceneMouseEvent>
@@ -457,7 +458,8 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
             p->setPen(QPen(QColor("#181818"), 2));
             p->drawEllipse(marker, 12, 12);
             p->drawText(QRectF(marker.x() - 10, marker.y() - 10, 20, 20), Qt::AlignCenter, "T");
-            p->drawText(QRectF(marker.x() + 15, marker.y() - 12, 110, 24), "独立起飞点");
+            p->drawText(QRectF(marker.x() + 15, marker.y() - 12, 110, 24),
+                        i18n::text("独立起飞点"));
         }
         if (routeVisible_) {
             QHash<QString, int> overlapping;
@@ -489,12 +491,12 @@ void TrackCanvas::drawForeground(QPainter *p, const QRectF &) {
     QFont f("Microsoft YaHei UI", 9);
     p->setFont(f);
     p->drawText(QRectF(20, 14, 280, 22), Qt::AlignLeft | Qt::AlignVCenter,
-                QStringLiteral("XY 俯视图 · Z 为高度"));
-    p->drawText(
-        QRectF(20, viewport()->height() - 36, 470, 22), Qt::AlignLeft | Qt::AlignVCenter,
-        placement_.isEmpty() ? QStringLiteral("先点击选中，再按住拖动 · 滚轮缩放 · 中键 / 空格平移")
-        : placement_ == "__takeoff" ? QStringLiteral("单击放置独立起飞点 · Esc 返回选择工具")
-                                    : QStringLiteral("点击画布放置门架 · Esc 返回选择工具"));
+                i18n::text("XY 俯视图 · Z 为高度"));
+    p->drawText(QRectF(20, viewport()->height() - 36, 470, 22), Qt::AlignLeft | Qt::AlignVCenter,
+                placement_.isEmpty()
+                    ? i18n::text("先点击选中，再按住拖动 · 滚轮缩放 · 中键 / 空格平移")
+                : placement_ == "__takeoff" ? i18n::text("单击放置独立起飞点 · Esc 返回选择工具")
+                                            : i18n::text("点击画布放置门架 · Esc 返回选择工具"));
     const double ppm = transform().m11();
     if (ppm > 0 && std::isfinite(ppm)) {
         const double desired = 70. / ppm;

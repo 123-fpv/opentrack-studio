@@ -1,0 +1,31 @@
+name: Bug / 问题报告
+description: Report an editor, recognition, export or translation issue / 报告编辑、识别、导出或翻译问题
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API keys or private data. Only attach material you may publish. 请勿上传密钥或私人资料，图片须有公开授权。"
+  - type: input
+    id: version
+    attributes:
+      label: Editor and simulator versions / 编辑器与模拟器版本
+      description: Include Windows version and UI language when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps and actual result / 复现步骤与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result / 预期结果
+      description: For routes, give gate order, entry face, exit face and wrapping side / 路线请标明门序、进入面、穿出面与绕行侧。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Public reproduction or screenshots / 可公开的复现材料或截图
+      description: A small original synthetic diagram is preferred. Remove credentials and private details.

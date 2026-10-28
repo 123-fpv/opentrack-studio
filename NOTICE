@@ -1,0 +1,23 @@
+OpenTrack Studio
+Copyright (c) 2026 OpenTrack Studio contributors
+
+Beginning with version 0.1.7, the application and its new contributions are
+licensed under the GNU General Public License, version 3 or, at your option,
+any later version (SPDX: GPL-3.0-or-later). See LICENSE.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for details.
+
+Versions through 0.1.6 were published under the MIT license. Those existing
+permissions are not withdrawn. Their copyright and permission notice is
+retained in licenses/OpenTrackStudio-MIT-through-0.1.6.txt for incorporated
+earlier material. That notice does not license the new GPL-covered changes
+under MIT.
+
+Qt, Microsoft runtime components and other dependencies retain their own
+licenses. See THIRD_PARTY_NOTICES.md. VelociDrone is a separate proprietary
+simulator; its name indicates compatibility, not affiliation or sponsorship.
+
+The application's license does not by itself impose an open-source license
+on a user's independently created track data, photographs or project files.

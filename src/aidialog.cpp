@@ -1,4 +1,5 @@
 #include "aidialog.h"
+#include "language.h"
 #include "scene3d.h"
 #include <QFutureWatcher>
 #include <QImageReader>
@@ -37,26 +38,27 @@ QThreadPool *thumbnailPool() {
     return pool;
 }
 QString warningTooltip(const QStringList &warnings) {
-    return "<pre style=\"white-space:pre-wrap\">" + warnings.join('\n').toHtmlEscaped() + "</pre>";
+    return "<pre style=\"white-space:pre-wrap\">" +
+           i18n::messages(warnings).join('\n').toHtmlEscaped() + "</pre>";
 }
 } // namespace
-AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
-    setWindowTitle("照片生成赛道 · DeepSeek V4.1 Flash");
+AiVisionDialog::AiVisionDialog(QWidget *parent, bool restoreSavedKey) : QDialog(parent) {
+    setWindowTitle(i18n::text("照片生成赛道 · DeepSeek V4.1 Flash"));
     setWindowIcon(QIcon(":/icons/app.png"));
     resize(960, 720);
     setMinimumSize(820, 620);
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(22, 20, 22, 18);
     layout->setSpacing(13);
-    layout->addWidget(text("实拍 / 航拍照片 → 可编辑的 3D 赛道草稿", "sectionTitle"));
-    layout->addWidget(text(
-        "选择同一飞场的 1–8 "
-        "张照片，尽量覆盖全部门架并包含重叠视角。已知门宽用于估算比例；距离、高度和门序仍需校对。",
-        "subtle"));
+    layout->addWidget(text(i18n::text("实拍 / 航拍照片 → 可编辑的 3D 赛道草稿"), "sectionTitle"));
+    layout->addWidget(text(i18n::text("选择同一飞场的 1–8 "
+                                      "张照片，尽量覆盖全部门架并包含重叠视角。已知门宽用于估算比例"
+                                      "；距离、高度和门序仍需校对。"),
+                           "subtle"));
     auto *body = new QHBoxLayout;
     body->setSpacing(18);
     auto *left = new QVBoxLayout;
-    left->addWidget(text("参考照片", "fieldLabel"));
+    left->addWidget(text(i18n::text("参考照片"), "fieldLabel"));
     images_ = new QListWidget;
     images_->setIconSize(QSize(110, 78));
     images_->setSpacing(6);
@@ -65,8 +67,8 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     images_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     left->addWidget(images_, 1);
     auto *photoButtons = new QHBoxLayout;
-    add_ = action("＋ 添加照片", "secondary");
-    remove_ = action("移除", "tool");
+    add_ = action(i18n::text("＋ 添加照片"), "secondary");
+    remove_ = action(i18n::text("移除"), "tool");
     photoButtons->addWidget(add_, 1);
     photoButtons->addWidget(remove_);
     left->addLayout(photoButtons);
@@ -81,35 +83,37 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     });
     auto *right = new QVBoxLayout;
     right->setSpacing(10);
-    auto *provider = text("DeepSeek 官方 · V4.1 Flash · 支持多图输入", "notice");
+    auto *provider = text(i18n::text("DeepSeek 官方 · V4.1 Flash · 支持多图输入"), "notice");
     right->addWidget(provider);
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     form->setSpacing(9);
     key_ = new QLineEdit;
     key_->setEchoMode(QLineEdit::Password);
-    key_->setPlaceholderText("粘贴 DeepSeek API Key");
+    key_->setPlaceholderText(i18n::text("粘贴 DeepSeek API Key"));
     key_->setMaxLength(2000);
-    key_->setText(loadApiKey());
-    form->addRow("API 密钥", key_);
+    if (restoreSavedKey)
+        key_->setText(loadApiKey());
+    form->addRow(i18n::text("API 密钥"), key_);
     width_ = new QDoubleSpinBox;
     width_->setRange(.2, 20);
     width_->setValue(3.0);
     width_->setSingleStep(.1);
     width_->setSuffix(" m");
-    form->addRow("门框中心线间距", width_);
+    form->addRow(i18n::text("门框中心线间距"), width_);
     right->addLayout(form);
-    fast_ = new QCheckBox("快速生成（优先速度）");
+    fast_ = new QCheckBox(i18n::text("快速生成（优先速度）"));
     fast_->setChecked(true);
-    fast_->setToolTip("复杂组合门可取消勾选以加强分析，耗时可能增加。两种模式都需要校对草稿。");
+    fast_->setToolTip(
+        i18n::text("复杂组合门可取消勾选以加强分析，耗时可能增加。两种模式都需要校对草稿。"));
     right->addWidget(fast_);
     connect(fast_, &QCheckBox::toggled, this, [this] { invalidateDraft(); });
     auto *credentialRow = new QHBoxLayout;
-    remember_ = new QCheckBox("在本机记住密钥");
+    remember_ = new QCheckBox(i18n::text("在本机记住密钥"));
     remember_->setChecked(true);
     credentialRow->addWidget(remember_);
     credentialRow->addStretch();
-    forget_ = action("清除本机密钥", "tool");
+    forget_ = action(i18n::text("清除本机密钥"), "tool");
     credentialRow->addWidget(forget_);
     right->addLayout(credentialRow);
     connect(forget_, &QPushButton::clicked, this, [this] {
@@ -117,17 +121,19 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
             return;
         clearApiKey();
         key_->clear();
-        state_->setText("已清除本机保存的密钥。");
+        state_->setText(i18n::text("已清除本机保存的密钥。"));
     });
-    right->addWidget(text("补充说明（可选，最多 4000 字）", "fieldLabel"));
+    right->addWidget(text(i18n::text("补充说明（可选，最多 4000 字）"), "fieldLabel"));
     notes_ = new QPlainTextEdit;
-    notes_->setPlaceholderText("例如：起点是左下角绿门，顺时针飞行，门框中心线间距 3 米、"
-                               "梁长 3.2 米；中间是上下穿越。请只填写你确认的信息。");
+    notes_->setPlaceholderText(
+        i18n::text("例如：起点是左下角绿门，顺时针飞行，门框中心线间距 3 米、"
+                   "梁长 3.2 米；中间是上下穿越。请只填写你确认的信息。"));
     notes_->setMaximumHeight(68);
     right->addWidget(notes_);
     previewStack_ = new QStackedWidget;
     auto *placeholder =
-        text("生成后在这里检查 3D 草稿\n\n未看到的门架和无法确定的尺度会提示校对。", "notice");
+        text(i18n::text("生成后在这里检查 3D 草稿\n\n未看到的门架和无法确定的尺度会提示校对。"),
+             "notice");
     placeholder->setAlignment(Qt::AlignCenter);
     previewStack_->addWidget(placeholder);
     if (QGuiApplication::platformName() != "offscreen") {
@@ -138,7 +144,8 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     right->addWidget(previewStack_, 1);
     body->addLayout(right, 1);
     layout->addLayout(body, 1);
-    state_ = text("点击“生成草稿”时，会把所选照片的缩小副本发送到 DeepSeek 官方 API。", "subtle");
+    state_ = text(i18n::text("点击“生成草稿”时，会把所选照片的缩小副本发送到 DeepSeek 官方 API。"),
+                  "subtle");
     state_->setMinimumHeight(30);
     layout->addWidget(state_);
     progress_ = new QProgressBar;
@@ -147,12 +154,12 @@ AiVisionDialog::AiVisionDialog(QWidget *parent) : QDialog(parent) {
     progress_->hide();
     layout->addWidget(progress_);
     auto *buttons = new QHBoxLayout;
-    auto *close = action("取消", "tool");
+    auto *close = action(i18n::text("取消"), "tool");
     buttons->addWidget(close);
     buttons->addStretch();
-    test_ = action("测试连接", "secondary");
-    generate_ = action("生成草稿", "primary");
-    apply_ = action("使用这份草稿", "secondary");
+    test_ = action(i18n::text("测试连接"), "secondary");
+    generate_ = action(i18n::text("生成草稿"), "primary");
+    apply_ = action(i18n::text("使用这份草稿"), "secondary");
     apply_->setEnabled(false);
     buttons->addWidget(test_);
     buttons->addWidget(generate_);
@@ -201,14 +208,14 @@ AiSettings AiVisionDialog::settings() const {
 }
 bool AiVisionDialog::prepareKey() {
     if (key_->text().trimmed().isEmpty()) {
-        state_->setText("请先填写 API 密钥。");
+        state_->setText(i18n::text("请先填写 API 密钥。"));
         key_->setFocus();
         return false;
     }
     if (remember_->isChecked()) {
         QString error;
         if (!storeApiKey(key_->text().trimmed(), &error)) {
-            state_->setText(error);
+            state_->setText(i18n::text(error));
             return false;
         }
     } else
@@ -225,11 +232,11 @@ void AiVisionDialog::invalidateDraft(const QString &message) {
     previewStack_->setCurrentIndex(0);
     state_->setToolTip({});
     if (!message.isEmpty())
-        state_->setText(message);
+        state_->setText(i18n::text(message));
 }
 void AiVisionDialog::setBusy(bool value, const QString &message) {
     busy_ = value;
-    state_->setText(message);
+    state_->setText(i18n::text(message));
     progress_->setVisible(value);
     for (auto *b : {generate_, test_, add_, remove_, forget_})
         b->setEnabled(!value);
@@ -243,8 +250,8 @@ void AiVisionDialog::setBusy(bool value, const QString &message) {
 void AiVisionDialog::addPhotos() {
     if (busy_)
         return;
-    const auto paths = QFileDialog::getOpenFileNames(this, "选择同一飞场的照片", {},
-                                                     "照片 (*.jpg *.jpeg *.png *.bmp)");
+    const auto paths = QFileDialog::getOpenFileNames(this, i18n::text("选择同一飞场的照片"), {},
+                                                     i18n::text("照片 (*.jpg *.jpeg *.png *.bmp)"));
     if (!paths.isEmpty())
         setImagePaths(paths);
 }
@@ -295,7 +302,7 @@ void AiVisionDialog::setImagePaths(const QStringList &paths) {
                 if (!thumbnail.isNull())
                     current->setIcon(QIcon(QPixmap::fromImage(thumbnail)));
                 else
-                    current->setText(QFileInfo(p).fileName() + "\n缩略图不可用");
+                    current->setText(QFileInfo(p).fileName() + i18n::text("\n缩略图不可用"));
                 break;
             }
         });
@@ -311,12 +318,13 @@ void AiVisionDialog::setImagePaths(const QStringList &paths) {
         }));
     }
     if (added)
-        invalidateDraft(QString("已添加 %1 张照片，请重新生成草稿。").arg(added));
+        invalidateDraft(i18n::text("已添加 %1 张照片，请重新生成草稿。").arg(added));
     if (limitReached)
-        state_->setText("最多使用 8 张照片，请移除多余照片后再添加。");
+        state_->setText(i18n::text("最多使用 8 张照片，请移除多余照片后再添加。"));
     else if (skipped)
-        state_->setText(
-            QString("已添加 %1 张照片，跳过 %2 张无法读取或过大的照片。").arg(added).arg(skipped));
+        state_->setText(i18n::text("已添加 %1 张照片，跳过 %2 张无法读取或过大的照片。")
+                            .arg(added)
+                            .arg(skipped));
 }
 void AiVisionDialog::testConnection() {
     if (busy_ || !prepareKey())
@@ -325,11 +333,12 @@ void AiVisionDialog::testConnection() {
     const auto cancel = cancel_;
     const auto config = settings();
     auto *watcher = new QFutureWatcher<QString>(this);
-    setBusy(true, "正在检查密钥与模型的图片输入能力…");
+    setBusy(true, i18n::text("正在检查密钥与模型的图片输入能力…"));
     connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
         const QString error = watcher->result();
         watcher->deleteLater();
-        setBusy(false, error.isEmpty() ? "连接成功：DeepSeek V4.1 Flash 支持图片输入。" : error);
+        setBusy(false, error.isEmpty() ? i18n::text("连接成功：DeepSeek V4.1 Flash 支持图片输入。")
+                                       : error);
     });
     watcher->setFuture(
         QtConcurrent::run([config, cancel] { return validateVisionModel(config, cancel); }));
@@ -338,7 +347,7 @@ void AiVisionDialog::generateDraft() {
     if (busy_)
         return;
     if (images_->count() == 0) {
-        state_->setText("请先添加照片。");
+        state_->setText(i18n::text("请先添加照片。"));
         return;
     }
     if (!prepareKey())
@@ -351,8 +360,8 @@ void AiVisionDialog::generateDraft() {
     const auto cancel = cancel_;
     auto *watcher = new QFutureWatcher<WorkResult>(this);
     invalidateDraft({});
-    setBusy(true, config.fastMode ? "正在快速解析图片…完成后先预览草稿。"
-                                  : "正在分析复杂布局…耗时取决于图片和接口响应。");
+    setBusy(true, config.fastMode ? i18n::text("正在快速解析图片…完成后先预览草稿。")
+                                  : i18n::text("正在分析复杂布局…耗时取决于图片和接口响应。"));
     connect(watcher, &QFutureWatcher<WorkResult>::finished, this, [this, watcher] {
         const auto work = watcher->result();
         watcher->deleteLater();
@@ -370,8 +379,9 @@ void AiVisionDialog::generateDraft() {
             previewStack_->setCurrentWidget(preview_);
             QTimer::singleShot(0, preview_, [this] { preview_->fitTrack(); });
         }
-        setBusy(false, QString("生成 %1 个门架。请检查 3D 草稿；距离、高度、方向和门序需要校对。")
-                           .arg(result_.document.gates.size()));
+        setBusy(false,
+                i18n::text("生成 %1 个门架。请检查 3D 草稿；距离、高度、方向和门序需要校对。")
+                    .arg(result_.document.gates.size()));
         state_->setToolTip(warningTooltip(result_.warnings));
     });
     watcher->setFuture(QtConcurrent::run([paths, config, cancel] {
@@ -379,20 +389,20 @@ void AiVisionDialog::generateDraft() {
         QList<QImage> images;
         for (const auto &path : paths) {
             if (cancel->load()) {
-                work.loadError = "已取消。";
+                work.loadError = i18n::text("已取消。");
                 return work;
             }
             QImageReader reader(path);
             reader.setAutoTransform(true);
             const QSize size = reader.size();
             if (!size.isValid() || qint64(size.width()) * size.height() > 80000000) {
-                work.loadError = "照片尺寸无效或过大。";
+                work.loadError = i18n::text("照片尺寸无效或过大。");
                 return work;
             }
             reader.setScaledSize(size.scaled(1600, 1600, Qt::KeepAspectRatio));
             auto image = reader.read();
             if (image.isNull()) {
-                work.loadError = "无法读取照片：" + QFileInfo(path).fileName();
+                work.loadError = i18n::text("无法读取照片：") + QFileInfo(path).fileName();
                 return work;
             }
             images.append(image);

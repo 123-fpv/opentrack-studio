@@ -2,13 +2,13 @@
 
 ## Application source and artwork
 
-OpenTrack Studio application source, its procedural gate drawings and its original demonstration layout are provided under the [MIT License](LICENSE).
+OpenTrack Studio application source, its procedural gate drawings and its original demonstration layout are provided under [GPL-3.0-or-later](LICENSE) beginning with version 0.1.7. Earlier MIT notices remain in [NOTICE](NOTICE) and [the preserved license](licenses/OpenTrackStudio-MIT-through-0.1.6.txt).
 
 The reference application's source was not available and has not been copied. The user-provided reference screenshot is not included in this repository or its distributable. No VelociDrone models, textures, sounds, executable code or other proprietary game assets are bundled. The product name VelociDrone identifies the simulator with which this independent editor seeks to interoperate; it does not imply sponsorship or affiliation.
 
 ## Qt 6.8.3
 
-The Windows application dynamically links the Qt Core, Gui, Widgets, Concurrent, Network, OpenGL and OpenGLWidgets libraries as required by the build and loads the relevant Qt platform/image plugins. The optional AI client uses Qt Network and Windows-native Schannel TLS; no OpenSSL runtime is bundled by the packaging helper. Qt is a separate third-party work, not covered by the application's MIT license. Its applicable open-source license terms, including the GNU Lesser General Public License version 3, continue to apply.
+The Windows application dynamically links the Qt Core, Gui, Widgets, Concurrent, Network, OpenGL and OpenGLWidgets libraries as required by the build and loads the relevant Qt platform/image plugins. The optional AI client uses Qt Network and Windows-native Schannel TLS; no OpenSSL runtime is bundled by the packaging helper. Qt is a separate third-party work, not covered by the application's GPL license. Its applicable open-source license terms, including the GNU Lesser General Public License version 3, continue to apply.
 
 - [Qt licensing information](https://doc.qt.io/qt-6/licensing.html)
 - [Qt 6.8.3 source archive](https://download.qt.io/archive/qt/6.8/6.8.3/submodules/)
@@ -34,7 +34,7 @@ Native `.trk` file encryption/decryption uses the Windows BCrypt system API. BCr
 
 Optional API credential storage uses Windows Credential Manager. Windows Credential Manager and Schannel are system services, not redistributed libraries. DeepSeek is an external API service used only by the opt-in photograph-to-draft workflow; no DeepSeek model weights or client SDK are bundled. API service use remains subject to the provider's own terms.
 
-The Microsoft Visual C++ runtime is separately licensed. The portable packaging helper copies unmodified x64 CRT files only from the licensed build machine's Visual Studio `Redist/MSVC/.../x64/Microsoft.VC143.CRT` directory. It does not source runtime files from the compiler `bin` directory or Windows system folders. Redistribution remains subject to the applicable Microsoft Software License Terms; the application MIT license does not cover these files. See [Microsoft's redistribution guidance](https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files), [local deployment guidance](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method) and [runtime license terms](https://aka.ms/VCRedistLicense).
+The Microsoft Visual C++ runtime is separately licensed. The portable packaging helper copies unmodified x64 CRT files only from the licensed build machine's Visual Studio `Redist/MSVC/.../x64/Microsoft.VC143.CRT` directory. It does not source runtime files from the compiler `bin` directory or Windows system folders. Redistribution remains subject to the applicable Microsoft Software License Terms; the application GPL license does not cover these files. See [Microsoft's redistribution guidance](https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files), [local deployment guidance](https://learn.microsoft.com/cpp/windows/choosing-a-deployment-method) and [runtime license terms](https://aka.ms/VCRedistLicense).
 
 ## File-format interoperability references
 

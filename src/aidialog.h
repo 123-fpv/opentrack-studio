@@ -16,7 +16,7 @@ namespace ot {
 class Scene3D;
 class AiVisionDialog final : public QDialog {
   public:
-    explicit AiVisionDialog(QWidget *parent = nullptr);
+    explicit AiVisionDialog(QWidget *parent = nullptr, bool restoreSavedKey = true);
     ~AiVisionDialog() override;
     const AiResult &result() const {
         return result_;

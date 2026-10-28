@@ -150,7 +150,7 @@ Prefix=.
 Plugins=.
 '@ | Set-Content -LiteralPath (Join-Path $OutputDir 'qt.conf') -Encoding ascii
 
-foreach ($name in @('README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+foreach ($name in @('README.md', 'README.zh-CN.md', 'LICENSE', 'NOTICE', 'CONTRIBUTING.md', 'THIRD_PARTY_NOTICES.md')) {
     Copy-Item -LiteralPath (Join-Path $projectDir $name) -Destination $OutputDir
 }
 Copy-Item -LiteralPath (Join-Path $projectDir 'docs') -Destination (Join-Path $OutputDir 'docs') -Recurse
@@ -165,6 +165,8 @@ foreach ($name in @('example-track.png', 'example.otproj', 'example.trk', 'threa
     $sample = Join-Path (Join-Path $BuildDir 'smoke') $name
     if (Test-Path -LiteralPath $sample) { Copy-Item -LiteralPath $sample -Destination $sampleDir }
 }
+
+Copy-Item -LiteralPath (Join-Path $projectDir 'licenses') -Destination (Join-Path $OutputDir 'licenses') -Recurse
 
 $noticeRoot = Join-Path $OutputDir "licenses/qt-$qtVersion"
 New-Item -ItemType Directory -Force -Path $noticeRoot | Out-Null
@@ -217,7 +219,7 @@ sbom contains the SDK's upstream inventories when supplied by that SDK.
 
 Qt is dynamically linked and has not been modified by this project.
 Compatible modified Qt DLLs can replace the supplied Qt DLLs. Application
-source and build instructions are supplied under MIT; no additional
+source and build instructions are supplied under GPL-3.0-or-later; no additional
 restriction is imposed on debugging modifications to LGPL-covered Qt.
 "@ | Set-Content -LiteralPath (Join-Path $noticeRoot 'SOURCES.txt') -Encoding utf8
 
@@ -226,7 +228,7 @@ Microsoft Visual C++ x64 runtime
 
 The runtime DLLs accompanying this application are unmodified redistributable
 files from the licensed build machine's Visual Studio 2022 Redist/MSVC tree.
-They are separate Microsoft software, not licensed under the application MIT
+They are separate Microsoft software, not licensed under the application GPL
 license. Their redistribution remains subject to Microsoft's software terms.
 
 Runtime license terms: https://aka.ms/VCRedistLicense

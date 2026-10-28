@@ -14,7 +14,7 @@
                 "routePattern": "orbit-bar-cw"
             },
             "height": 3,
-            "id": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
+            "id": "59a4389b-7a93-4488-bb47-6d98c50a1528",
             "label": "",
             "position": [
                 0,
@@ -33,7 +33,7 @@
                 "frameGeometry": "centerline-v1"
             },
             "height": 3,
-            "id": "0d3b12c3-c7ff-4c4c-92bf-63fbe0efb7f5",
+            "id": "67a195d4-5941-4cf4-bf63-a3ed50a7b521",
             "label": "",
             "position": [
                 12,
@@ -52,7 +52,7 @@
                 "frameGeometry": "centerline-v1"
             },
             "height": 3,
-            "id": "b98a1490-b971-4225-93a7-11e2ea244582",
+            "id": "540b5c11-f3c9-4797-9c75-3cec975eb698",
             "label": "",
             "position": [
                 24,
@@ -78,8 +78,8 @@
                 }
             },
             "face": "back",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "23e983f2-3c96-4742-b3bf-e06f96f30424",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "8c87d005-5214-4902-a471-2e447ef6f929",
             "kind": "pass",
             "label": "",
             "level": 0,
@@ -108,8 +108,8 @@
                 }
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "66b9cde4-c7c0-4405-9162-8ca229c541ec",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "73fdfd5f-be2b-4f94-bb74-0808f01319f4",
             "kind": "guide",
             "label": "",
             "level": 0,
@@ -141,8 +141,8 @@
                 "raceCheckpoint": true
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "5b0e7e2a-c8ed-431d-b436-bf65ca220036",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "eea705bc-07be-4a4f-a81c-a9279225aa28",
             "kind": "guide",
             "label": "",
             "level": 0,
@@ -171,8 +171,8 @@
                 }
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "826cf54c-d899-485d-a666-337e9849cc6d",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "73982a95-7076-479e-b717-3663e30c88ac",
             "kind": "guide",
             "label": "",
             "level": 0,
@@ -196,8 +196,8 @@
                 }
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "13b08a02-50c8-481e-9853-80001a7df68a",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "731824cd-bb5a-418e-bd6a-5c43d82f86af",
             "kind": "pass",
             "label": "",
             "level": 1,
@@ -226,8 +226,8 @@
                 }
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "92750c8d-2d7e-463c-925e-e7da7257c2e1",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "ba10b87a-bd90-445d-8a53-0f87c4b81e2f",
             "kind": "guide",
             "label": "",
             "level": 0,
@@ -259,8 +259,8 @@
                 "raceCheckpoint": true
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "c69bc849-d4f0-4f6f-829d-87933e7322f6",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "76a575ef-cba7-40d8-ad32-d2a834a52b77",
             "kind": "guide",
             "label": "",
             "level": 0,
@@ -289,8 +289,8 @@
                 }
             },
             "face": "front",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "f844adbc-60fe-4192-bb1b-5a50d0972ae9",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "78d47a72-57c7-41a6-afec-dfb8ba7a60a8",
             "kind": "guide",
             "label": "",
             "level": 0,
@@ -314,8 +314,8 @@
                 }
             },
             "face": "back",
-            "gateId": "b95d9e4e-9738-46c2-90fe-1459ceaad557",
-            "id": "e1a62529-35de-47f2-a033-99604324b4a2",
+            "gateId": "59a4389b-7a93-4488-bb47-6d98c50a1528",
+            "id": "03b5a0ed-79ee-46a9-9354-b26a02fb6856",
             "kind": "pass",
             "label": "",
             "level": 0,
@@ -331,8 +331,8 @@
             "extra": {
             },
             "face": "front",
-            "gateId": "0d3b12c3-c7ff-4c4c-92bf-63fbe0efb7f5",
-            "id": "0d3b12c3-c7ff-4c4c-92bf-63fbe0efb7f5",
+            "gateId": "67a195d4-5941-4cf4-bf63-a3ed50a7b521",
+            "id": "67a195d4-5941-4cf4-bf63-a3ed50a7b521",
             "kind": "pass",
             "label": "",
             "level": 0,
@@ -348,8 +348,8 @@
             "extra": {
             },
             "face": "front",
-            "gateId": "b98a1490-b971-4225-93a7-11e2ea244582",
-            "id": "b98a1490-b971-4225-93a7-11e2ea244582",
+            "gateId": "540b5c11-f3c9-4797-9c75-3cec975eb698",
+            "id": "540b5c11-f3c9-4797-9c75-3cec975eb698",
             "kind": "pass",
             "label": "",
             "level": 0,

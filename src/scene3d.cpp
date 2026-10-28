@@ -1,5 +1,6 @@
 #include "scene3d.h"
 #include "document.h"
+#include "language.h"
 
 #include <QElapsedTimer>
 #include <QGuiApplication>
@@ -939,15 +940,17 @@ struct Scene3D::Impl {
         }
         painter.setFont(QFont(QStringLiteral("Microsoft YaHei UI"), 9));
         const QString title =
-            software ? QStringLiteral("透视预览 · 硬件加速不可用") : QStringLiteral("3D 透视视图");
+            software ? i18n::text("透视预览 · 硬件加速不可用") : i18n::text("3D 透视视图");
         painter.setPen(QColor("#333333"));
         painter.setBrush(QColor(255, 255, 255, 222));
-        painter.drawRoundedRect(QRectF(16, 15, software ? 215 : 123, 31), 10, 10);
-        painter.drawText(QRectF(27, 15, software ? 200 : 105, 31), Qt::AlignVCenter | Qt::AlignLeft,
+        const qreal titleWidth =
+            std::min(qreal(q->width() - 50), painter.fontMetrics().horizontalAdvance(title) + 26.0);
+        painter.drawRoundedRect(QRectF(16, 15, titleWidth, 31), 10, 10);
+        painter.drawText(QRectF(27, 15, titleWidth - 18, 31), Qt::AlignVCenter | Qt::AlignLeft,
                          title);
         const QString hint = !placement.isEmpty()
-                                 ? QStringLiteral("点击地面放置 · Esc 结束放置")
-                                 : QStringLiteral("先点击选中，再按住拖动 · 右键环绕 · 中键平移");
+                                 ? i18n::text("点击地面放置 · Esc 结束放置")
+                                 : i18n::text("先点击选中，再按住拖动 · 右键环绕 · 中键平移");
         const QRectF hintRect(16, q->height() - 44, std::min(440, q->width() - 110), 29);
         painter.setPen(Qt::NoPen);
         painter.setBrush(QColor(255, 255, 255, 226));
@@ -962,8 +965,8 @@ struct Scene3D::Impl {
             painter.setPen(QColor("#3e3e3e"));
             painter.drawText(tag, Qt::AlignCenter,
                              previewPausedAtGap
-                                 ? QStringLiteral("预览已在净空断点处暂停")
-                                 : QStringLiteral("几何路线预览 · %1 km/h").arg(qRound(speedKph)));
+                                 ? i18n::text("预览已在净空断点处暂停")
+                                 : i18n::text("几何路线预览 · %1 km/h").arg(qRound(speedKph)));
         }
         const QPointF base(q->width() - 47.0, q->height() - 43.0);
         const auto axis = [&](const QVector3D &direction, const QColor &color,
@@ -1631,7 +1634,7 @@ void Scene3D::mouseMoveEvent(QMouseEvent *event) {
         QString tooltip;
         for (const auto &visual : d_->routeVisuals)
             if (visual.step.id == stepId) {
-                tooltip = QStringLiteral("过门 %1 · 实体 G%2 · 第 %3 次穿越")
+                tooltip = i18n::text("过门 %1 · 实体 G%2 · 第 %3 次穿越")
                               .arg(visual.number)
                               .arg(visual.gateNumber)
                               .arg(visual.visit);

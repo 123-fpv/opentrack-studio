@@ -14,6 +14,9 @@ namespace ot {
 // and oblique flight tangents while retaining source height/curvature. Edge-on
 // along-bar extent remains inferred. No gate type alone inserts a full return;
 // missing occlusion evidence is retained for review rather than invented.
+// Subpixel stroke fairing preserves physical crossings and essential checks;
+// complete directed traces establish first-encounter order. Unresolved crossings
+// or nonlocal repeats retain an explicit order-review flag instead of a guess.
 // Blue-icon plans retain the simple detector below. Heights and unreadable or
 // ambiguous passages require human review; no missing cells are filled by type.
 // arbitrary photographs are outside this local recognizer's scope.

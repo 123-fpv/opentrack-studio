@@ -5,4 +5,7 @@
   <qresource prefix="/theme">
     <file alias="studio.qss">studio.qss</file>
   </qresource>
+  <qresource prefix="/i18n">
+    <file alias="en.json">i18n/en.json</file>
+  </qresource>
 </RCC>
