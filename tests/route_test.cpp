@@ -136,6 +136,35 @@ void clearRoute(const ot::TrackDocument &document) {
 
 int main(int argc, char **argv) {
     QCoreApplication app(argc, argv);
+    {
+        ot::TrackDocument panelCourse;
+        panelCourse.closedLoop = false;
+        panelCourse.routeStepsDefined = true;
+        auto solidLadder = ot::makeGate(QStringLiteral("ladder-blocked"));
+        solidLadder.yaw = 31;
+        solidLadder.position = {8, -3};
+        panelCourse.gates = {solidLadder};
+        const auto panelRotation = QQuaternion::fromAxisAndAngle(0, 1, 0, 31);
+        const QVector3D panelOrigin(8, static_cast<float>(solidLadder.elevation), -3);
+        ot::RouteStep approach, departure;
+        approach.id = ot::newGateId();
+        approach.kind = QStringLiteral("guide");
+        approach.localGuide = panelOrigin + panelRotation.rotatedVector({0, -1.5f, -4});
+        departure = approach;
+        departure.id = ot::newGateId();
+        departure.localGuide = panelOrigin + panelRotation.rotatedVector({0, -1.5f, 4});
+        panelCourse.routeSteps = {approach, departure};
+        const auto panelBypass = ot::routeCurve(panelCourse);
+        require(panelBypass.clearanceSatisfied && panelBypass.points.size() >= 2,
+                "a connector facing the closed lower opening retains a safe route or safe strokes");
+        denseClearance(panelCourse, panelBypass);
+        panelCourse.routeSteps = {pass(solidLadder, 0, 1)};
+        const auto upperPass = ot::routeCurve(panelCourse);
+        require(upperPass.clearanceSatisfied && upperPass.breaks.isEmpty(),
+                "the genuine upper aperture of the same blocked structure remains flyable");
+        denseClearance(panelCourse, upperPass);
+    }
+
     ot::TrackDocument document;
     document.closedLoop = false;
     document.routeStepsDefined = true;

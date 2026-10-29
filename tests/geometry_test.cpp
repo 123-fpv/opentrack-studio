@@ -94,6 +94,7 @@ int main(int argc, char **argv) {
         {"double", 2, 1, 7, 6.2, 3.2, .1, -1.5, 0},
         {"triple", 3, 1, 10, 9.2, 3.2, .1, -3, 0},
         {"ladder", 1, 2, 7, 3.2, 6.2, .1, 0, 0},
+        {"quad", 2, 2, 12, 6.2, 6.2, .1, -1.5, 0},
         {"cube", 1, 1, 12, 3.2, 3.2, 3.2, 0, -1.5},
         {"cube-stack", 1, 2, 20, 3.2, 6.2, 3.2, 0, -1.5},
     };
@@ -185,6 +186,49 @@ int main(int argc, char **argv) {
             grouped.gates[0].extra = item.extra;
         }
     }
+
+    auto blocked = ot::makeGate(QStringLiteral("ladder-blocked"));
+    const auto blockedMetrics = ot::gateFrameMetrics(blocked);
+    const auto blockedSolids = ot::gateFrameBeams(blocked);
+    require(blockedMetrics.columns == 1 && blockedMetrics.levels == 2 &&
+                close(blockedMetrics.outerHeight, 6.2) && blockedSolids.size() == 8 &&
+                close(ot::gatePassageElevation(blocked), 4.6),
+            "blocked ladder retains two physical levels but defaults to its only upper aperture");
+    require(!ot::gateCellOpen(blocked, 0, 0) && ot::gateCellOpen(blocked, 0, 1) &&
+                !ot::gateCellOpen(blocked, 1, 1),
+            "solid lower panel and out-of-group cells cannot be selected as apertures");
+    const auto panel = blockedSolids.last();
+    require(panel.center == QVector3D(0, -1.5f, 0) && panel.size == QVector3D(3, 3, .1f),
+            "lower panel fills the whole centreline cell without changing the stock frames");
+    ot::TrackDocument blockedDocument;
+    blockedDocument.gates = {blocked};
+    const auto defaultPasses = ot::effectiveRouteSteps(blockedDocument);
+    require(defaultPasses.size() == 1 && defaultPasses[0].level == 1 &&
+                ot::routeStepGeometry(blockedDocument, defaultPasses[0]).valid,
+            "implicit route chooses the open upper cell of a blocked ladder");
+    auto blockedPass = defaultPasses[0];
+    blockedPass.level = 0;
+    require(!ot::routeStepGeometry(blockedDocument, blockedPass).valid,
+            "an explicit pass through a filled panel is invalid geometry");
+    ot::TrackDocument blockedLoaded;
+    QString blockedError;
+    require(ot::fromJson(ot::toJson(blockedDocument), &blockedLoaded, &blockedError) &&
+                blockedLoaded.gates[0].type == QStringLiteral("ladder-blocked") &&
+                ot::gateFrameBeams(blockedLoaded.gates[0]).size() == 8,
+            "blocked geometry and default open cell survive project roundtrip");
+    blockedDocument.routeStepsDefined = true;
+    blockedDocument.routeSteps = {blockedPass};
+    require(!ot::fromJson(ot::toJson(blockedDocument), &blockedLoaded, &blockedError),
+            "project validation rejects routes through the blocked lower aperture");
+    blockedDocument.routeSteps.clear();
+    blockedDocument.gates[0].extra.insert(QStringLiteral("passLevel"), 0);
+    require(!ot::fromJson(ot::toJson(blockedDocument), &blockedLoaded, &blockedError),
+            "project validation rejects a blocked default passage even with an empty route");
+    require(ot::gateManeuverSteps(blocked, QStringLiteral("single")).size() == 1 &&
+                ot::gateManeuverSteps(blocked, QStringLiteral("single"))[0].level == 1 &&
+                ot::gateManeuverSteps(blocked, QStringLiteral("lower-upper")).isEmpty() &&
+                ot::gateManeuverSteps(blocked, QStringLiteral("orbit-bar-cw")).isEmpty(),
+            "manual templates never create a traversal through the blocked lower cell");
 
     ot::Gate legacy;
     legacy.id = QStringLiteral("legacy-dimension-fixture");

@@ -56,7 +56,8 @@ int main(int argc, char **argv) {
     QList<QImage> glyphs;
     for (const auto &type :
          {QStringLiteral("standard"), QStringLiteral("double"), QStringLiteral("triple"),
-          QStringLiteral("ladder"), QStringLiteral("cube"), QStringLiteral("cube-stack")}) {
+          QStringLiteral("ladder"), QStringLiteral("quad"), QStringLiteral("ladder-blocked"),
+          QStringLiteral("cube"), QStringLiteral("cube-stack")}) {
         const auto neutral = symbol(type);
         for (const auto &previous : glyphs)
             require(neutral != previous, "compound glyphs are visually distinct from other types");

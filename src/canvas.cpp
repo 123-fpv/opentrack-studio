@@ -56,11 +56,14 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
         p->drawPath(f);
         p->setPen(QPen(QColor(255, 255, 255, 180), 1.6));
         p->drawLine(QPointF(1, -16), QPointF(12, -11));
-    } else if (type == "double" || type == "triple" || type == "ladder" || type == "cube" ||
-               type == "cube-stack") {
+    } else if (type == "double" || type == "triple" || type == "ladder" || type == "quad" ||
+               type == "ladder-blocked" || type == "cube" || type == "cube-stack") {
         const bool cube = type == "cube" || type == "cube-stack";
-        const int columns = type == "double" ? 2 : (type == "triple" ? 3 : 1);
-        const int levels = type == "ladder" || type == "cube-stack" ? 2 : 1;
+        const int columns = type == "double" || type == "quad" ? 2 : (type == "triple" ? 3 : 1);
+        const int levels =
+            type == "ladder" || type == "ladder-blocked" || type == "quad" || type == "cube-stack"
+                ? 2
+                : 1;
         const qreal cell = cube ? (levels == 2 ? 21. : 31.) : (columns > 1 ? 50. / columns : 21.);
         const QPointF depth = cube ? QPointF(13, -9) : QPointF();
         const QRectF front(-columns * cell / 2 - depth.x() / 2, -levels * cell / 2 - depth.y() / 2,
@@ -89,6 +92,10 @@ void paintGateSymbol(QPainter *p, const QRectF &b, const QString &type, bool sel
             }
         }
         grid(front, c, 2.8);
+        if (type == "ladder-blocked")
+            p->fillRect(QRectF(front.left() + 1.4, front.center().y() + 1.4, front.width() - 2.8,
+                               front.height() / 2 - 2.8),
+                        c);
     } else {
         const QRectF frame(-24, -20, 43, 36);
         const QPointF d(8, -5);

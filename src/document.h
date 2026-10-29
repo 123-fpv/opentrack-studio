@@ -103,9 +103,13 @@ struct GateBeam {
 // beamOverhang=0.2 TOTAL extra length (0.1 m at each end). Unmarked gates keep
 // their legacy bar dimensions. width/height values are never rescaled on load.
 // Marked compound frames use PER-CELL centreline width/height: double/triple
-// have 2/3 columns, ladder has 2 levels, cube has four walls at depth=width,
-// and cube-stack has 2 cube levels. Shared joints do not duplicate stock beams.
+// have 2/3 columns, ladder has 2 levels, quad has 2 columns and 2 levels,
+// ladder-blocked has 2 levels with a solid lower panel, cube has four walls at
+// depth=width, and cube-stack has 2 cube levels. Shared stocks are not duplicated.
 GateFrameMetrics gateFrameMetrics(const Gate &gate);
+// False for out-of-group cells and solid blocked apertures. The lower level of a
+// ladder-blocked frame is physical obstacle geometry, never a race checkpoint.
+bool gateCellOpen(const Gate &gate, int column, int level);
 QVector<GateBeam> gateFrameBeams(const Gate &gate);
 // Negative/zero dimensions select type defaults: frame centreline 3 x 3 m,
 // pillar square section 0.1 m and height 3.2 m. The lowest beam starts at Y=0.
@@ -115,7 +119,8 @@ Gate makeGate(const QString &type = QStringLiteral("standard"), double width = -
 // Pillar passages use a 2.4 m checkpoint lane beside the solid post, with 0.35 m
 // clearance. extra.passSide selects local right (+1, default) or local left (-1).
 // Marked groups select the leftmost/lower cell by default; optional zero-based
-// extra.passColumn/passLevel choose another cell. Cube passages use its front
+// extra.passColumn/passLevel choose another cell; ladder-blocked defaults to the
+// upper open cell. Cube passages use its front
 // wall at local Z=-width/2. Position and altitude describe the WHOLE group centre.
 QPointF gatePassagePosition(const Gate &gate);
 double gatePassageElevation(const Gate &gate);

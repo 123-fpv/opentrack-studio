@@ -193,6 +193,95 @@ QImage crossingSchematic() {
         painter.drawLine(order[i], order[(i + 1) % order.size()]);
     return image;
 }
+
+// An independent six-component course with a projected crossing inside a
+// ladder. Thinning its two-pixel shared neck produces two adjacent Y junctions;
+// consuming that neck only once strands the outgoing shaft after the loop.
+QImage junctionSchematic() {
+    QImage image(800, 650, QImage::Format_ARGB32);
+    image.fill(Qt::white);
+    QPainter painter(&image);
+    const QColor ink("#34334d"), magenta("#b42a80");
+    painter.setPen(QPen(ink, 3));
+    for (const auto center : {QPointF(650, 480), QPointF(650, 180), QPointF(390, 130),
+                              QPointF(150, 200), QPointF(160, 460)})
+        painter.drawRect(QRectF(center - QPointF(15, 15), QSizeF(30, 30)));
+    painter.drawRect(QRectF(385, 435, 30, 60));
+    painter.drawLine(385, 465, 415, 465);
+    painter.fillRect(QRectF(635, 560, 30, 50), ink);
+    painter.setPen(QPen(magenta, 3));
+    QPainterPath route;
+    route.moveTo(650, 480);
+    for (const auto point : {QPointF(650, 180), QPointF(390, 130), QPointF(150, 200),
+                             QPointF(160, 460), QPointF(399, 466), QPointF(401, 466)})
+        route.lineTo(point);
+    route.cubicTo(430, 485, 430, 440, 399, 466);
+    route.lineTo(401, 466);
+    route.lineTo(400, 450);
+    route.lineTo(490, 380);
+    route.lineTo(650, 480);
+    painter.drawPath(route);
+    painter.drawLine(650, 560, 650, 480);
+    return image;
+}
+
+QImage decoratedSchematic(bool extraTypes = false) {
+    auto source = inkSchematic();
+    const QColor ink("#34334d");
+    // Replace the filled launch rectangle with a compact row of four marks.
+    // The route ends before this independent pad, as on many published plans.
+    for (int y = 650; y <= 705; ++y)
+        for (int x = 805; x <= 835; ++x)
+            if (source.pixelColor(x, y) == ink)
+                source.setPixelColor(x, y, Qt::white);
+    {
+        QPainter painter(&source);
+        for (int i = 0; i < 4; ++i)
+            painter.fillRect(QRectF(795 + i * 13, 700, 6, 6), ink);
+        if (extraTypes) {
+            painter.fillRect(QRectF(407, 97, 46, 46), Qt::white);
+            painter.setPen(QPen(ink, 3));
+            painter.drawRect(QRectF(400, 90, 60, 60));
+            painter.drawLine(430, 90, 430, 150);
+            painter.drawLine(400, 120, 460, 120);
+            painter.fillRect(QRectF(626, 552, 28, 27), ink);
+        }
+    }
+    QImage field(source.size(), QImage::Format_ARGB32);
+    field.fill(Qt::white);
+    {
+        QPainter painter(&field);
+        QPainterPath backdrop;
+        backdrop.moveTo(820, 650);
+        for (const auto p : {QPointF(820, 210), QPointF(660, 120), QPointF(430, 120),
+                             QPointF(250, 180), QPointF(180, 360), QPointF(250, 540),
+                             QPointF(450, 600), QPointF(640, 550), QPointF(720, 440)})
+            backdrop.lineTo(p);
+        painter.setPen(QPen(QColor("#c8c8c8"), 50));
+        painter.drawPath(backdrop);
+        painter.setPen(QPen(QColor("#969696"), 2));
+        painter.drawPath(backdrop);
+    }
+    for (int y = 0; y < source.height(); ++y)
+        for (int x = 0; x < source.width(); ++x)
+            if (source.pixelColor(x, y) != QColor(Qt::white))
+                field.setPixel(x, y, source.pixel(x, y));
+    QImage poster(2000, 1500, QImage::Format_ARGB32);
+    poster.fill(QColor("#ffb718"));
+    QPainter painter(&poster);
+    painter.fillRect(QRectF(50, 250, 1900, 1200), Qt::white);
+    painter.drawImage(QPoint(650, 350), field);
+    painter.setPen(QPen(Qt::black, 3));
+    painter.drawRect(QRectF(70, 270, 1860, 1160));
+    // Red north arrow and blue dimension-like strokes are not route or gates.
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor("#d41a2e"));
+    painter.drawPolygon(QPolygonF{{1770, 420}, {1755, 485}, {1790, 455}});
+    painter.setPen(QPen(QColor("#3688cf"), 3));
+    painter.drawLine(1440, 330, 1590, 330);
+    painter.drawRect(QRectF(1500, 320, 10, 14));
+    return poster;
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -384,6 +473,52 @@ int main(int argc, char **argv) {
           "compound internal passages remain explicitly subject to review");
     check(schematic.document.closedLoop,
           "directed first-encounter ordering preserves a source circuit's closing leg");
+
+    for (const double factor : {.75, 1., 1.5}) {
+        const auto poster = decoratedSchematic();
+        const auto image = factor == 1. ? poster : poster.scaled(
+            qRound(poster.width() * factor), qRound(poster.height() * factor),
+            Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        const auto detected = ot::recognizeTrack(image);
+        check(detected.detectedCount == 10,
+              "decorated gray-backed poster retains physical symbols at multiple resolutions");
+        check(detected.document.extra.value("recognition").toObject().value("method") ==
+                  "local-ink-route-v2",
+              "navy symbols on gray field do not fall through to blue dimension fragments");
+        check(detected.document.takeoff.enabled,
+              "separate compact launch-grid row automatically creates an independent takeoff");
+        const QPointF expectedPad =
+            detected.document.backgroundOrigin +
+            QPointF((650 + 817.5) * factor, (350 + 703) * factor) *
+                detected.document.metersPerPixel;
+        check(std::hypot(detected.document.takeoff.position.x() - expectedPad.x(),
+                         detected.document.takeoff.position.y() - expectedPad.y()) < 1.,
+              "takeoff is placed on the grid marks rather than the route endpoint or first gate");
+        check(std::abs(detected.document.metersPerPixel * factor - .1) < .008,
+              "small poster symbols calibrate from 3m stroke centres, excluding frame thickness");
+        for (const auto &gate : detected.document.gates)
+            check(gate.type != "pillar", "poster labels and gray contours cannot create pillars");
+    }
+    const auto newTypes = ot::recognizeTrack(decoratedSchematic(true));
+    bool hasQuad = false, hasBlocked = false;
+    for (const auto &gate : newTypes.document.gates) {
+        hasQuad |= gate.type == "quad";
+        hasBlocked |= gate.type == "ladder-blocked";
+        if (gate.type == "ladder-blocked")
+            for (const auto &step : newTypes.document.routeSteps)
+                if (step.gateId == gate.id && step.kind == "pass")
+                    check(step.level == 1, "blocked lower aperture is never a flight checkpoint");
+    }
+    check(hasQuad && hasBlocked,
+          "equal four-cell frame and lower-blocked ladder keep their physical component types");
+
+    const auto junction = ot::recognizeTrack(junctionSchematic(), manual);
+    const auto junctionEvidence = junction.document.extra.value("recognition").toObject();
+    check(junction.detectedCount == 6 && junction.document.takeoff.enabled,
+          "an internal projected loop retains six physical frames and the launch pad");
+    check(junctionEvidence.value("routeTraceCoverage").toDouble() > .99 &&
+              junctionEvidence.value("sourceOrderConfirmed").toBool(),
+          "a tiny Y-to-Y junction neck cannot strand the outgoing shaft after a loop");
 
     const auto crossed = ot::recognizeTrack(crossingSchematic(), manual);
     const QVector<QPointF> crossingOrder{{800, 590}, {200, 150}, {800, 150}, {200, 590}};

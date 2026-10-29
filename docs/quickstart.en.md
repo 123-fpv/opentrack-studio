@@ -15,7 +15,8 @@ Simplified Chinese UI. Use the language selector, or start with `--lang en` /
 3. Correct missing structures, order, faces, dimensions, heights and wrap sides.
    Click a component once to select its halo, then drag it on a second press.
    Right-drag to orbit, middle-drag to pan, wheel to zoom.
-4. Set the independent takeoff grid, base height and heading. It is separate
+4. Review the automatically detected independent takeoff grid, base height and
+   heading. Place it manually if the symbol cannot be resolved. It is separate
    from the first checkpoint. No landing point is required by the editor.
 5. Save `.otproj` to keep the complete editable path, image and associations.
    Export `.trk` to create native simulator objects and ordered checkpoints.
@@ -25,6 +26,11 @@ Simplified Chinese UI. Use the language selector, or start with `--lang en` /
 T1, T2, etc. are essential winding controls, not additional physical gates.
 Ordinary fitted samples are not exported as checkpoints. Do not remove an
 essential T control merely to bypass its required wrapping side.
+
+Use the left-side obstacle inventory to compare physical types and counts with
+the diagram's legend. It includes four-opening grids and raised gates with a
+blocked lower level. The latter has one usable upper opening; its lower panel
+is a real solid in the preview and exported track.
 
 Source images do not cover the 3D ground. Use the optional overhead reference
 when comparing the imported image. Frame cells default to 3 m centreline

@@ -358,8 +358,9 @@ int main(int argc, char **argv) {
         require(ot::nearestNativeBlockColor(entry.color).prefab == entry.prefab,
                 "native palette maps exact material");
 
-    const QList<QPair<QString, int>> kinds = {{"standard", 4}, {"double", 7}, {"triple", 10},
-                                              {"ladder", 7},   {"cube", 12},  {"cube-stack", 20}};
+    const QList<QPair<QString, int>> kinds = {
+        {"standard", 4}, {"double", 7},      {"triple", 10}, {"ladder", 7},
+        {"cube", 12},    {"cube-stack", 20}, {"quad", 12},   {"ladder-blocked", 8}};
     for (const auto &kind : kinds) {
         auto doc = course();
         auto group = ot::makeGate(kind.first);
@@ -371,6 +372,8 @@ int main(int argc, char **argv) {
         const auto metrics = ot::gateFrameMetrics(group);
         for (int column = 0; column < metrics.columns; ++column)
             for (int level = 0; level < metrics.levels; ++level) {
+                if (!ot::gateCellOpen(group, column, level))
+                    continue;
                 doc.routeSteps.append(pass(group, QStringLiteral("front"), column, level));
                 ot::RouteStep guide;
                 guide.id = ot::newGateId();
@@ -431,6 +434,14 @@ int main(int argc, char **argv) {
                     "editing takeoff replaces rather than duplicates grid");
         }
     }
+    auto invalidBlocked = course();
+    invalidBlocked.gates = {ot::makeGate(QStringLiteral("ladder-blocked"))};
+    invalidBlocked.routeStepsDefined = true;
+    invalidBlocked.routeSteps = {pass(invalidBlocked.gates[0], QStringLiteral("front"), 0, 0)};
+    const auto beforeBlockedExport = readFile(path);
+    require(!ot::exportVelocidrone(path, invalidBlocked, &error) &&
+                readFile(path) == beforeBlockedExport,
+            "native export refuses a filled lower window and preserves the existing file");
     // Stacked/side-by-side manoeuvres change order and direction, not physical objects.
     auto patterns = course();
     auto triple = ot::makeGate(QStringLiteral("triple"));

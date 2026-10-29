@@ -47,6 +47,7 @@ class StudioWindow : public QMainWindow {
            *colorMapping_ = nullptr;
     QLabel *gateCount_ = nullptr, *length_ = nullptr, *zoom_ = nullptr, *selectionTitle_ = nullptr,
            *imageStatus_ = nullptr, *notice_ = nullptr;
+    QLabel *obstacleInventory_ = nullptr;
     QListWidget *order_ = nullptr;
     QListWidget *routeOrder_ = nullptr;
     QTabWidget *sequenceTabs_ = nullptr;

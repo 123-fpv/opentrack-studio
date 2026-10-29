@@ -211,6 +211,10 @@ bool validateDocument(const TrackDocument &document, QString *error) {
                     return fail(error,
                                 QStringLiteral("门架 %1 的通行单元 %2 无效。").arg(gate.id, field));
             }
+            if (!gateCellOpen(gate, gate.extra.value(QStringLiteral("passColumn")).toInt(0),
+                              gate.extra.value(QStringLiteral("passLevel"))
+                                  .toInt(gate.type == QStringLiteral("ladder-blocked") ? 1 : 0)))
+                return fail(error, QStringLiteral("门架 %1 的默认通行单元被封闭。").arg(gate.id));
         }
     }
     if (document.routeSteps.size() > kMaxRouteSteps)
@@ -569,6 +573,10 @@ QString gateTypeName(const QString &type) {
         return QStringLiteral("三联门");
     if (type == QStringLiteral("ladder"))
         return QStringLiteral("叠门");
+    if (type == QStringLiteral("quad"))
+        return QStringLiteral("田字门");
+    if (type == QStringLiteral("ladder-blocked"))
+        return QStringLiteral("双层单门（下层封闭）");
     if (type == QStringLiteral("cube"))
         return QStringLiteral("立方门");
     if (type == QStringLiteral("cube-stack"))
@@ -636,11 +644,12 @@ GateFrameMetrics gateFrameMetrics(const Gate &gate) {
     metrics.centerlineModel = gate.extra.value(QStringLiteral("frameGeometry")).toString() ==
                               QStringLiteral("centerline-v1");
     if (metrics.centerlineModel) {
-        if (gate.type == QStringLiteral("double"))
+        if (gate.type == QStringLiteral("double") || gate.type == QStringLiteral("quad"))
             metrics.columns = 2;
         else if (gate.type == QStringLiteral("triple"))
             metrics.columns = 3;
-        if (gate.type == QStringLiteral("ladder") || gate.type == QStringLiteral("cube-stack"))
+        if (gate.type == QStringLiteral("ladder") || gate.type == QStringLiteral("cube-stack") ||
+            gate.type == QStringLiteral("quad") || gate.type == QStringLiteral("ladder-blocked"))
             metrics.levels = 2;
         if (gate.type == QStringLiteral("cube") || gate.type == QStringLiteral("cube-stack"))
             metrics.centerDepth = gate.width;
@@ -671,6 +680,13 @@ GateFrameMetrics gateFrameMetrics(const Gate &gate) {
             ? std::max(metrics.horizontalBeamLength, metrics.centerDepth + metrics.beamThickness)
             : metrics.beamThickness;
     return metrics;
+}
+
+bool gateCellOpen(const Gate &gate, int column, int level) {
+    const auto metrics = gateFrameMetrics(gate);
+    return column >= 0 && column < metrics.columns && level >= 0 && level < metrics.levels &&
+           !(metrics.centerlineModel && gate.type == QStringLiteral("ladder-blocked") &&
+             level == 0);
 }
 
 QVector<GateBeam> gateFrameBeams(const Gate &gate) {
@@ -708,6 +724,10 @@ QVector<GateBeam> gateFrameBeams(const Gate &gate) {
                 for (const float x : {-halfWidth, halfWidth})
                     beams.append(
                         {{x, bottom + boundary * height, 0}, {thickness, thickness, horizontal}});
+        if (gate.type == QStringLiteral("ladder-blocked"))
+            // A closed lower opening is a solid panel, not another flyable cell.
+            // Extend to the stock centrelines so small rounding cannot leave a slit.
+            beams.append({{0, bottom + height / 2, 0}, {width, height, thickness}});
         return beams;
     }
     return {{{-halfWidth, 0, 0}, {thickness, vertical, thickness}},
@@ -728,6 +748,8 @@ Gate makeGate(const QString &type, double width, double height) {
         gate.extra.insert(QStringLiteral("beamThickness"), .1);
         gate.extra.insert(QStringLiteral("beamOverhang"), .2);
     }
+    if (type == QStringLiteral("ladder-blocked"))
+        gate.extra.insert(QStringLiteral("passLevel"), 1);
     gate.elevation = gateFrameMetrics(gate).outerHeight / 2.0;
     setGateColor(gate, QColor(QStringLiteral("#0d0d0d")));
     return gate;
@@ -756,8 +778,9 @@ double gatePassageElevation(const Gate &gate) {
     const auto metrics = gateFrameMetrics(gate);
     if (!metrics.centerlineModel)
         return gate.elevation;
-    const int level =
-        std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(0), 0, metrics.levels - 1);
+    const int minimum = gate.type == QStringLiteral("ladder-blocked") ? 1 : 0;
+    const int level = std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(minimum),
+                                 minimum, metrics.levels - 1);
     return gate.elevation + (level - (metrics.levels - 1) / 2.0) * gate.height;
 }
 
@@ -840,8 +863,7 @@ RouteStepGeometry geometryForStep(const Gate *gate, const RouteStep &step) {
     if (step.kind != QStringLiteral("pass") || !gate)
         return geometry;
     const auto metrics = gateFrameMetrics(*gate);
-    if (step.column < 0 || step.column >= metrics.columns || step.level < 0 ||
-        step.level >= metrics.levels)
+    if (!gateCellOpen(*gate, step.column, step.level))
         return geometry;
     const bool cube = metrics.centerDepth > 0;
     const float x = static_cast<float>((step.column - (metrics.columns - 1) / 2.0) * gate->width);
@@ -953,7 +975,11 @@ QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document) {
         step.id = gate.id;
         step.gateId = gate.id;
         step.column = gate.extra.value(QStringLiteral("passColumn")).toInt(0);
-        step.level = gate.extra.value(QStringLiteral("passLevel")).toInt(0);
+        step.level = gate.extra.value(QStringLiteral("passLevel"))
+                         .toInt(gateFrameMetrics(gate).centerlineModel &&
+                                        gate.type == QStringLiteral("ladder-blocked")
+                                    ? 1
+                                    : 0);
         steps.append(step);
     }
     return steps;
@@ -962,6 +988,11 @@ QVector<RouteStep> effectiveRouteSteps(const TrackDocument &document) {
 QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
     QVector<RouteStep> steps;
     const auto metrics = gateFrameMetrics(gate);
+    // Multi-level templates traverse the lower aperture. They are not valid for
+    // this solid-backed structure; callers may retain/edit the source route.
+    if (metrics.centerlineModel && gate.type == QStringLiteral("ladder-blocked") &&
+        pattern != QStringLiteral("single"))
+        return steps;
     const QVector3D scale(static_cast<float>(metrics.columns * gate.width / 2),
                           static_cast<float>(metrics.levels * gate.height / 2),
                           static_cast<float>(gate.width / 2));
@@ -997,9 +1028,11 @@ QVector<RouteStep> gateManeuverSteps(const Gate &gate, const QString &pattern) {
         steps.append(step);
     };
     if (pattern == QStringLiteral("single")) {
+        const int minimum =
+            metrics.centerlineModel && gate.type == QStringLiteral("ladder-blocked") ? 1 : 0;
         addPass(std::clamp(gate.extra.value(QStringLiteral("passColumn")).toInt(0), 0,
                            metrics.columns - 1),
-                std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(0), 0,
+                std::clamp(gate.extra.value(QStringLiteral("passLevel")).toInt(minimum), minimum,
                            metrics.levels - 1),
                 QStringLiteral("front"));
     } else if ((pattern == QStringLiteral("upright-left-up") ||

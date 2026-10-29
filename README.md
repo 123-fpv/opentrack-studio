@@ -16,12 +16,12 @@ English | [简体中文](README.zh-CN.md)
 
 1. Drag a clear PNG/JPG/BMP track diagram into the image box, 3D view or overhead view. A single diagram generates a local draft automatically.
 2. Inspect the numbered passes and arrows. Check the entry face, exit face, height and side of each wrap; correct uncertain results before export.
-3. Set the independent takeoff grid and save the editable `.otproj` project.
+3. Review the independently detected takeoff grid (or place one if the symbol is unclear), then save the editable `.otproj` project.
 4. Export `.trk`, place it in your Windows Documents folder, and use **Track Editor → Import Track** in VelociDrone. Verify the scene, collisions and actual flight in the simulator.
 
 This is a **VelociDrone-compatible editor**, not a replacement simulator and not an official VelociDrone product. The native format adapter is independently implemented. Game models, textures, executables, databases, private user diagrams and API credentials are not included.
 
-Clear dark-frame diagrams with a magenta racing line support standard gates, double/triple gates, ladders, cubes and stacked cubes. Recognition uses directed line tracing and occlusion evidence; it is not a guarantee for every image style, screenshot or photograph. Ambiguous depth and hidden geometry still require review. Optional multi-photo AI drafts are a separate workflow, not a surveyed reconstruction.
+Clear dark-frame diagrams with a magenta racing line support standard gates, double/triple gates, ladders, four-opening grids, raised gates with a blocked lower level, cubes and stacked cubes. Recognition uses directed line tracing and occlusion evidence; it is not a guarantee for every image style, screenshot or photograph. Ambiguous depth and hidden geometry still require review. Optional multi-photo AI drafts are a separate workflow, not a surveyed reconstruction.
 
 ## Editing and routes
 
@@ -29,6 +29,7 @@ Clear dark-frame diagrams with a magenta racing line support standard gates, dou
 - Solid gray 3D ground. Reference images remain optional overhead references and are not placed on the 3D floor.
 - Click once to select a component and its halo; drag the selected component on a second press. Right-drag or drag empty space to orbit, middle-drag to pan, and use the wheel to zoom.
 - Physical structures and ordered passes are separate. One ladder can be traversed at different levels without duplicating its beams.
+- The left-side inventory counts physical structures by type and lists the independent takeoff grid separately. Repeated passages do not inflate obstacle counts. The blocked lower opening of a raised gate cannot be selected as a passage.
 - Actual entry/exit faces and progressive wraps, including climbing/descending around an upright, variable-height linked-gate passages, and roof-to-side gravity passages. The current recognized route is the default action preview.
 - Model-clearance checks preserve actual crossings, directions and essential T controls. Ordinary fitted samples stay in the project; only real passes and essential T controls become native checkpoints.
 - Default frame-cell centreline spacing is 3×3 m. Beams are 3.2 m long with a 0.1×0.1 m section; the clear aperture is 2.9×2.9 m. Turning pillars default to 0.1×0.1×3.2 m.

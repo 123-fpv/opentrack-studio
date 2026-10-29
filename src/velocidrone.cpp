@@ -280,10 +280,10 @@ QString pillarBucket(const QPointF &point) {
 }
 
 bool compositeFrame(const Gate &gate) {
-    static const QSet<QString> types{QStringLiteral("standard"),  QStringLiteral("start"),
-                                     QStringLiteral("double"),    QStringLiteral("triple"),
-                                     QStringLiteral("ladder"),    QStringLiteral("cube"),
-                                     QStringLiteral("cube-stack")};
+    static const QSet<QString> types{
+        QStringLiteral("standard"), QStringLiteral("start"),          QStringLiteral("double"),
+        QStringLiteral("triple"),   QStringLiteral("ladder"),         QStringLiteral("cube"),
+        QStringLiteral("quad"),     QStringLiteral("ladder-blocked"), QStringLiteral("cube-stack")};
     return types.contains(gate.type) && gateFrameMetrics(gate).centerlineModel;
 }
 
@@ -682,6 +682,8 @@ void restorePhysicalRoute(TrackDocument *document, const QJsonArray &barriers) {
                                      : std::atan2(-portal.right.z(), portal.right.x());
             const QStringList shapes{QStringLiteral("cube-stack"),
                                      QStringLiteral("cube"),
+                                     QStringLiteral("quad"),
+                                     QStringLiteral("ladder-blocked"),
                                      QStringLiteral("triple"),
                                      QStringLiteral("double"),
                                      QStringLiteral("ladder"),

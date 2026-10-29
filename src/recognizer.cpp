@@ -204,6 +204,44 @@ std::vector<unsigned char> closeInk(const std::vector<unsigned char> &source, in
 QRect blobBounds(const Component &c) {
     return QRect(c.left, c.top, c.width(), c.height());
 }
+
+// Measure between the centres of opposite frame strokes. Bounding-box widths
+// include both half-stocks and antialiasing, which substantially underestimates
+// metres per pixel for the small symbols on a decorated poster.
+double frameCentreSpan(const std::vector<unsigned char> &ink, int width,
+                       const Component &shape) {
+    std::vector<double> spans;
+    for (int axis = 0; axis < 2; ++axis) {
+        const int length = axis ? shape.height() : shape.width();
+        const int cross = axis ? shape.width() : shape.height();
+        const auto at = [&](int along, int across) {
+            return ink[size_t((shape.top + (axis ? along : across)) * width +
+                              shape.left + (axis ? across : along))] != 0;
+        };
+        for (int row = cross / 4; row <= cross * 3 / 4; ++row) {
+            int first = 0, last = length - 1;
+            while (first < length && !at(first, row))
+                ++first;
+            while (last >= 0 && !at(last, row))
+                --last;
+            if (first > length / 4 || last < length * 3 / 4)
+                continue;
+            int leftEnd = first, rightBegin = last;
+            while (leftEnd + 1 < length && at(leftEnd + 1, row))
+                ++leftEnd;
+            while (rightBegin > 0 && at(rightBegin - 1, row))
+                --rightBegin;
+            if (leftEnd - first > length / 4 || last - rightBegin > length / 4 ||
+                rightBegin <= leftEnd)
+                continue;
+            spans.push_back((rightBegin + last - first - leftEnd) / 2.0);
+        }
+    }
+    if (spans.size() < 6)
+        return 0;
+    std::sort(spans.begin(), spans.end());
+    return spans[spans.size() / 2];
+}
 QPointF boxCenter(const Component &c) {
     return QPointF((c.left + c.right + 1) / 2.0, (c.top + c.bottom + 1) / 2.0);
 }
@@ -401,7 +439,7 @@ PrintedTrace tracePrintedLine(const std::vector<unsigned char> &raw, int width, 
         for (size_t j = i + 1; j < endpoints.size(); ++j) {
             const auto a = point(endpoints[i]), b = point(endpoints[j]), delta = b - a;
             const double length = std::hypot(delta.x(), delta.y());
-            if (length < 1 || length > cell * .86)
+            if (length < 1 || length > cell * 1.45)
                 continue;
             if (length > cell * .38) {
                 bool inSymbol = false;
@@ -423,14 +461,32 @@ PrintedTrace tracePrintedLine(const std::vector<unsigned char> &raw, int width, 
     std::sort(gaps.begin(), gaps.end(),
               [](const Gap &a, const Gap &b) { return a.score < b.score; });
     std::set<int> joined;
-    for (const auto &gap : gaps)
-        if (!joined.count(gap.a) && !joined.count(gap.b)) {
-            graph[size_t(gap.a)].insert(gap.b);
-            graph[size_t(gap.b)].insert(gap.a);
-            joined.insert(gap.a);
-            joined.insert(gap.b);
-            ++result.occlusions;
+    std::vector<int> parent(pixels.size());
+    std::iota(parent.begin(), parent.end(), 0);
+    const auto root = [&](int v) {
+        while (parent[size_t(v)] != v) {
+            parent[size_t(v)] = parent[size_t(parent[size_t(v)])];
+            v = parent[size_t(v)];
         }
+        return v;
+    };
+    for (int v = 0; v < int(graph.size()); ++v)
+        for (int next : graph[size_t(v)])
+            parent[size_t(root(v))] = root(next);
+    // Prefer completing broken shafts before closing a small projected loop.
+    // Otherwise the nearest pair on one upright can consume both ends of the
+    // return arc and strand the route that leaves the next aperture.
+    for (int phase = 0; phase < 2; ++phase)
+        for (const auto &gap : gaps)
+            if (!joined.count(gap.a) && !joined.count(gap.b) &&
+                (phase || root(gap.a) != root(gap.b))) {
+                graph[size_t(gap.a)].insert(gap.b);
+                graph[size_t(gap.b)].insert(gap.a);
+                parent[size_t(root(gap.a))] = root(gap.b);
+                joined.insert(gap.a);
+                joined.insert(gap.b);
+                ++result.occlusions;
+            }
     // Printed arrow heads create short leaf branches. Keep the shaft and the
     // long input tail; a short cycle is retained and consumed by the edge walk.
     for (int iteration = 0; iteration < 4; ++iteration) {
@@ -507,6 +563,49 @@ PrintedTrace tracePrintedLine(const std::vector<unsigned char> &raw, int width, 
             if (score > best) {
                 best = score;
                 next = candidate;
+            }
+        }
+        if (next < 0 && graph[size_t(current)].size() >= 3) {
+            // A thinned X can become two nearby Y junctions joined by a short
+            // neck. Reuse only that bounded connector to reach its unused exit;
+            // completed shafts and projected loops remain consumed.
+            const double radius = std::max(3.0, cell * .12);
+            std::vector<int> previous(pixels.size(), -1), queue{current};
+            previous[size_t(current)] = current;
+            int branch = -1;
+            for (size_t at = 0; at < queue.size() && branch < 0; ++at) {
+                const int v = queue[at];
+                if (v != current && graph[size_t(v)].size() >= 3)
+                    for (int n : graph[size_t(v)])
+                        if (!consumed.count(edge(v, n))) {
+                            branch = v;
+                            break;
+                        }
+                if (branch >= 0)
+                    break;
+                for (int n : graph[size_t(v)]) {
+                    if (previous[size_t(n)] >= 0 || !consumed.count(edge(v, n)) ||
+                        squaredDistance(point(n), point(current)) > radius * radius)
+                        continue;
+                    previous[size_t(n)] = v;
+                    queue.push_back(n);
+                }
+            }
+            if (branch >= 0) {
+                bool inSymbol = false;
+                for (const auto &node : nodes)
+                    inSymbol |= blobBounds(node.shape).contains(point(current).toPoint());
+                // Traversing an unmarked field crossing does not establish its
+                // over/under or first-branch meaning. A split junction inside
+                // a physical symbol is instead resolved by its window visits.
+                result.ambiguous |= !inSymbol;
+                std::vector<int> connector;
+                for (int v = branch; v != current; v = previous[size_t(v)])
+                    connector.push_back(v);
+                for (auto it = connector.rbegin(); it != connector.rend(); ++it)
+                    walk.push_back(*it);
+                current = branch;
+                continue;
             }
         }
         if (next < 0)
@@ -956,8 +1055,8 @@ bool fitOccludedFrontalStroke(const Gate &gate, const DiagramNode &node, const P
         auto p = localAt(index);
         const int column = int(std::floor((p.x() + scale.x()) / gate.width)),
                   level = int(std::floor((p.y() + scale.y()) / gate.height));
-        if (column < 0 || column >= m.columns || level < 0 || level >= m.levels)
-            continue; // An above-bar or outside-upright depth crossing is not a portal.
+        if (!gateCellOpen(gate, column, level))
+            continue; // Outside the frame or inside a blocked cell is not a portal.
         const double cx = (column - (m.columns - 1) / 2.0) * gate.width,
                      cy = (level - (m.levels - 1) / 2.0) * gate.height;
         double u = (p.x() - cx) / (m.openingWidth / 2), v = (p.y() - cy) / (m.openingHeight / 2);
@@ -1298,6 +1397,8 @@ QVector<RouteStep> traceComponentPasses(Gate &gate, const DiagramNode &node,
             continue;
         const int column = std::cos(yaw) < -.5 ? metrics.columns - 1 - imageColumn : imageColumn,
                   level = metrics.levels - 1 - imageRow;
+        if (!gateCellOpen(gate, column, level))
+            continue;
         if (!visits.isEmpty() && visits.last().column == column && visits.last().level == level) {
             visits.last().interrupted |= i - visits.last().last > cell * .6;
             visits.last().last = i;
@@ -1479,7 +1580,8 @@ QVector<RouteStep> traceComponentPasses(Gate &gate, const DiagramNode &node,
         // cells are flagged for correction, rather than filled by a type preset.
         ambiguous = true;
         if (visits.isEmpty())
-            visits.push_back({0, 0, std::max(0, firstInside), std::max(0, lastInside)});
+            visits.push_back({0, gate.type == "ladder-blocked" ? 1 : 0,
+                              std::max(0, firstInside), std::max(0, lastInside)});
         for (int i = 0; i < visits.size(); ++i) {
             RouteStep step;
             step.id = newGateId();
@@ -1596,7 +1698,8 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         for (int x = 0; x < width; ++x) {
             const int r = qRed(line[x]), g = qGreen(line[x]), b = qBlue(line[x]);
             route[size_t(y * width + x)] =
-                qAlpha(line[x]) >= 100 && r > 90 && r > g * 1.45 && b > g * 1.18 && b > 35;
+                qAlpha(line[x]) >= 100 && r > 90 && r > g * 1.45 && b > g * 1.18 &&
+                b > std::max(35., r * .38);
             routePixels += route[size_t(y * width + x)] != 0;
         }
     }
@@ -1635,9 +1738,10 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         const auto *line = reinterpret_cast<const QRgb *>(working.constScanLine(y));
         for (int x = 0; x < width; ++x) {
             const int r = qRed(line[x]), g = qGreen(line[x]), b = qBlue(line[x]);
-            const int maximum = std::max({r, g, b}), minimum = std::min({r, g, b});
+            const int maximum = std::max({r, g, b});
             dark[size_t(y * width + x)] =
-                qAlpha(line[x]) >= 100 && maximum < 185 && (b >= r * .95 || maximum - minimum < 24);
+                qAlpha(line[x]) >= 100 && maximum < 185 &&
+                (maximum < 100 || (b - r >= 12 && b - g >= 8));
         }
     }
     const int radius = std::max(1, int(std::round(2 * resolution)));
@@ -1657,24 +1761,56 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         if (!field.contains(boxCenter(s).toPoint()))
             continue;
         const int major = std::max(s.width(), s.height()), minor = std::min(s.width(), s.height());
-        if (major < 18 * resolution || major > std::min(width, height) * .45)
+        if (major < 12 || major > std::min(width, height) * .45)
             continue;
         const double fill = double(s.count) / (s.width() * s.height());
-        if (fill > .90) {
+        if (fill > .90 || (fill > .75 && s.width() > s.height() * 4)) {
             platforms.push_back(s);
             continue;
         }
         auto holes = enclosedHoles(shapeInk, width, s);
         const double ratio = double(s.width()) / s.height();
         if (holes.size() == 1 && ratio > .7 && ratio < 1.4 &&
-            holes[0] > s.width() * s.height() * .20 && minor >= 14 * resolution)
+            holes[0] > s.width() * s.height() * .20 && minor >= 10)
             cellSizes.push_back(std::min(s.width(), s.height()));
         shapes.push_back({s, std::move(holes), fill});
     }
-    if (cellSizes.size() < 3)
+    if (cellSizes.size() < 3) {
+        int framed = 0;
+        for (const auto &shape : shapes)
+            framed += !shape.holes.empty();
+        // A coloured route with several dark frames is a schematic even when
+        // its calibration fails. Blue dimension labels must not become pillars
+        // through the unrelated editor-icon fallback.
+        if (framed >= 3) {
+            attempt.applicable = true;
+            attempt.result.document = base;
+            attempt.result.document.extra.insert(
+                QStringLiteral("recognition"),
+                QJsonObject{{"method", "local-ink-unresolved"}, {"requiresReview", true}});
+            attempt.result.warnings << QStringLiteral(
+                "检测到深色门框和洋红路线，但无法可靠确定图示尺寸；请裁剪赛道区域后重新导入。"
+                "未将文字或尺寸标注当作门架生成。");
+        }
         return attempt;
+    }
     std::sort(cellSizes.begin(), cellSizes.end());
     const double cellPixels = cellSizes[cellSizes.size() / 2];
+    std::vector<double> centreSpans;
+    for (const auto &shape : shapes) {
+        const auto &s = shape.component;
+        const double ratio = double(s.width()) / s.height();
+        if (shape.holes.size() != 1 || ratio < .90 || ratio > 1.10 ||
+            s.width() < cellPixels * .8 || s.width() > cellPixels * 1.2)
+            continue;
+        const double span = frameCentreSpan(dark, width, s);
+        if (span >= cellPixels * .65 && span <= cellPixels)
+            centreSpans.push_back(span);
+    }
+    std::sort(centreSpans.begin(), centreSpans.end());
+    const double metricCellPixels = centreSpans.size() >= 3
+                                        ? centreSpans[centreSpans.size() / 2]
+                                        : cellPixels;
     std::vector<DiagramNode> nodes;
     for (const auto &object : shapes) {
         const auto &s = object.component;
@@ -1693,11 +1829,15 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
             continue;
         DiagramNode node;
         node.shape = s;
-        if (major / minor > 3 && minor < cellPixels * .5) {
+        if (major / minor > 2.3 && minor < cellPixels * .8) {
             node.edgeOn = true;
             node.type =
                 major > cellPixels * 2.05 ? QStringLiteral("ladder") : QStringLiteral("standard");
             node.confidence = .68;
+        } else if (bw > cellPixels * 1.5 && bh > cellPixels * 1.5 &&
+                   bw < cellPixels * 2.5 && bh < cellPixels * 2.5 &&
+                   object.holes.size() == 4 && object.holes.front() < object.holes.back() * 1.65) {
+            node.type = QStringLiteral("quad");
         } else if (bw > cellPixels * 1.18 && bh > cellPixels * 1.18 &&
                    ((object.holes.size() >= 3 &&
                      object.holes.front() > object.holes.back() * 1.65) ||
@@ -1710,10 +1850,15 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         } else if (bw > cellPixels * 1.5 && bh < cellPixels * 1.6 && !object.holes.empty()) {
             node.type = QStringLiteral("double");
         } else if (bh > cellPixels * 1.5 && bw < cellPixels * 1.5 && !object.holes.empty()) {
-            node.type = QStringLiteral("ladder");
+            node.type = object.holes.size() == 1 && object.fill > .55
+                            ? QStringLiteral("ladder-blocked")
+                            : QStringLiteral("ladder");
         } else if (bw > cellPixels * .6 && bw < cellPixels * 1.5 && bh > cellPixels * .6 &&
                    bh < cellPixels * 1.6 && !object.holes.empty()) {
             node.type = QStringLiteral("standard");
+        } else if (object.holes.empty() && bw > cellPixels * 1.2 && bw < cellPixels * 1.8 &&
+                   bh > cellPixels * .9 && bh < cellPixels * 1.6 && object.fill < .65) {
+            node.type = QStringLiteral("start");
         } else
             continue;
         nodes.push_back(node);
@@ -1728,7 +1873,8 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     document = base;
     document.gates.clear();
     if (options.autoScale)
-        document.metersPerPixel = std::clamp(3.0 / (cellPixels * (sx + sy) / 2), .00001, 1000.0);
+        document.metersPerPixel =
+            std::clamp(3.0 / (metricCellPixels * (sx + sy) / 2), .00001, 1000.0);
     document.backgroundOrigin = QPointF(-input.width() * document.metersPerPixel / 2,
                                         -input.height() * document.metersPerPixel / 2);
 
@@ -1793,7 +1939,7 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
     int start = 0;
     QPointF startReference;
     bool startKnown = false;
-    double bestStart = cellPixels * cellPixels * 4;
+    double bestStart = cellPixels * cellPixels * 16;
     for (const auto &platform : platforms)
         for (const auto &terminal : terminals) {
             const QPointF a = boxCenter(platform);
@@ -1864,7 +2010,9 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
         document.takeoff.yaw = qRadiansToDegrees(std::atan2(direction.x(), direction.y()));
         document.takeoff.extra.insert(
             QStringLiteral("recognition"),
-            QJsonObject{{QStringLiteral("source"), QStringLiteral("filled-launch-platform")},
+            QJsonObject{{QStringLiteral("source"), QStringLiteral("filled-or-grid-launch-platform")},
+                        {QStringLiteral("pixelPosition"),
+                         QJsonArray{startReference.x() * sx, startReference.y() * sy}},
                         {QStringLiteral("requiresReview"), true}});
     }
     const auto trace = tracePrintedLine(route, width, height, dark, field, nodes, cellPixels,
@@ -1993,6 +2141,10 @@ DiagramAttempt recognizeInkDiagram(const QImage &input, const QImage &working,
                     {QStringLiteral("sourceOrderConfirmed"), tracedOrder},
                     {QStringLiteral("interleavedRevisitRequiresReview"), interleavedRevisit},
                     {QStringLiteral("startDetectedFromPlatform"), startKnown},
+                    {QStringLiteral("scaleMethod"),
+                     centreSpans.size() >= 3 ? QStringLiteral("frame-stroke-centres-3m")
+                                             : QStringLiteral("frame-bounds-3m-estimate")},
+                    {QStringLiteral("scaleSymbolPixels"), metricCellPixels * (sx + sy) / 2},
                     {QStringLiteral("routeGraphConnected"), connected || tracedOrder},
                     {QStringLiteral("routeTraceCoverage"), trace.coverage},
                     {QStringLiteral("routeTracePoints"), trace.points.size()},

@@ -15,6 +15,7 @@
 #include <QMimeData>
 #include <QSaveFile>
 #include <QScopedValueRollback>
+#include <QStandardItemModel>
 #include <QtConcurrentRun>
 #include <QtWidgets>
 #include <cmath>
@@ -529,6 +530,16 @@ void StudioWindow::setupUi() {
     sl->addLayout(a);
     sl->addLayout(b);
     ll->addWidget(stats);
+    auto *inventoryBox = new QGroupBox(i18n::text("障碍物统计"));
+    auto *inventoryLayout = new QVBoxLayout(inventoryBox);
+    obstacleInventory_ = label({}, "subtle");
+    obstacleInventory_->setObjectName("obstacleInventory");
+    obstacleInventory_->setTextFormat(Qt::RichText);
+    obstacleInventory_->setWordWrap(true);
+    obstacleInventory_->setToolTip(
+        i18n::text("按实体分类计数；同一座门多次通过仍只算一座。起飞台单独统计。"));
+    inventoryLayout->addWidget(obstacleInventory_);
+    ll->addWidget(inventoryBox);
     auto *takeoffBox = new QGroupBox(i18n::text("独立起飞点"));
     auto *takeoffLayout = new QVBoxLayout(takeoffBox);
     takeoffLayout->setSpacing(7);
@@ -1006,6 +1017,8 @@ void StudioWindow::setupUi() {
         {"double", i18n::text("双连门"), i18n::text("两列单元"), 3, 3},
         {"triple", i18n::text("三连门"), i18n::text("三列单元"), 3, 3},
         {"ladder", i18n::text("日字门"), i18n::text("上下两层"), 3, 3},
+        {"quad", i18n::text("田字门"), i18n::text("两列两层"), 3, 3},
+        {"ladder-blocked", i18n::text("双层单门"), i18n::text("下层封闭，仅上层通行"), 3, 3},
         {"cube", i18n::text("单层重力门"), i18n::text("立方框架"), 3, 3},
         {"cube-stack", i18n::text("双层重力门"), i18n::text("两层立方框架"), 3, 3}};
     for (int i = 0; i < compounds.size(); ++i) {
@@ -1291,6 +1304,32 @@ void StudioWindow::updateStats() {
         turnChecks += step.kind == "guide" && step.extra.value("raceCheckpoint").toBool();
     }
     gateCount_->setText(QString("%1 / %2").arg(doc_.gates.size()).arg(passes));
+    QMap<QString, int> counts;
+    for (const auto &gate : doc_.gates)
+        ++counts[gate.type];
+    const QList<QPair<QString, QString>> inventoryNames{{"start", i18n::text("计时 / 起终点门")},
+                                                        {"standard", i18n::text("单门")},
+                                                        {"cube", i18n::text("单层重力门")},
+                                                        {"cube-stack", i18n::text("双层重力门")},
+                                                        {"ladder-blocked", i18n::text("双层单门")},
+                                                        {"ladder", i18n::text("日字门")},
+                                                        {"double", i18n::text("双连门")},
+                                                        {"triple", i18n::text("三连门")},
+                                                        {"quad", i18n::text("田字门")},
+                                                        {"pillar", i18n::text("转向柱")}};
+    QString inventory = "<table width=\"100%\" cellspacing=\"2\">";
+    auto inventoryRow = [&inventory](const QString &name, int count) {
+        inventory += QString("<tr><td>%1</td><td align=\"right\">× %2</td></tr>")
+                         .arg(name.toHtmlEscaped())
+                         .arg(count);
+    };
+    for (const auto &entry : inventoryNames)
+        if (const int count = counts.take(entry.first))
+            inventoryRow(entry.second, count);
+    for (auto it = counts.cbegin(); it != counts.cend(); ++it)
+        inventoryRow(i18n::text(gateTypeName(it.key())), it.value());
+    inventoryRow(i18n::text("独立起飞台"), doc_.takeoff.enabled ? 1 : 0);
+    obstacleInventory_->setText(inventory + "</table>");
     gateCount_->setToolTip(
         turnChecks ? i18n::text("另有 %1 个翻绕检查点，在模拟器中约束绕行顺序。").arg(turnChecks)
                    : QString());
@@ -1386,6 +1425,11 @@ void StudioWindow::editRouteSelection() {
     const int column = std::max(0, passColumn_->currentIndex());
     const int level = std::max(0, passLevel_->currentIndex());
     const bool reverse = stepReverse_->currentIndex() == 1;
+    if (const auto *gate = findGate(doc_, selected_))
+        if (!gateCellOpen(*gate, column, level)) {
+            updateSelection(selected_);
+            return;
+        }
     edit(i18n::text("调整本次穿越"), [=](TrackDocument &d) {
         makeRouteExplicit(d);
         for (auto &step : d.routeSteps)
@@ -1423,7 +1467,7 @@ void StudioWindow::addRoutePass() {
     step.id = newGateId();
     step.gateId = gate->id;
     step.column = gate->extra.value("passColumn").toInt(0);
-    step.level = gate->extra.value("passLevel").toInt(0);
+    step.level = gate->extra.value("passLevel").toInt(gate->type == "ladder-blocked" ? 1 : 0);
     const QString afterId = selectedRouteStep_;
     selectedRouteStep_ = step.id;
     edit(i18n::text("新增一次穿越"), [step, afterId](TrackDocument &d) {
@@ -1551,8 +1595,10 @@ void StudioWindow::updateManeuverPreview() {
             if (step.gateId == gate->id)
                 sourceSteps.append(step);
     static_cast<ManeuverPreview *>(maneuverPreview_)->setManeuver(gate, pattern, sourceSteps);
+    const bool supported =
+        gate && (pattern == "source-route" || !gateManeuverSteps(*gate, pattern).isEmpty());
     if (auto *apply = findChild<QPushButton *>("applyManeuver"))
-        apply->setEnabled(gate && pattern != "source-route");
+        apply->setEnabled(supported && pattern != "source-route");
     const bool orbit = pattern == "orbit-bar-cw" || pattern == "orbit-bar-ccw";
     maneuverHint_->setText(
         pattern == "source-route"
@@ -1573,6 +1619,8 @@ void StudioWindow::updateManeuverPreview() {
         maneuverHint_->setText(i18n::text("过门顺序：%1").arg(passages.join(" → ")) + "\n" +
                                i18n::text("请按编号核对进入面、出口和转向。"));
     }
+    if (gate && !supported)
+        maneuverHint_->setText(i18n::text("当前门型不支持此动作，请保留原路线或选择单次穿越。"));
 }
 void StudioWindow::editTakeoff() {
     if (updating_)
@@ -1629,6 +1677,10 @@ void StudioWindow::updateSelection(const QString &id) {
             passColumn_->addItem(i18n::text("第 %1 列").arg(i + 1));
         for (int i = 0; i < frame.levels; ++i)
             passLevel_->addItem(i18n::text("第 %1 层").arg(i + 1));
+        if (gate->type == "ladder-blocked")
+            if (auto *model = qobject_cast<QStandardItemModel *>(passLevel_->model()))
+                if (auto *item = model->item(0))
+                    item->setEnabled(false);
         passColumn_->setCurrentIndex(hasActiveStep ? activeStep.column
                                                    : gate->extra.value("passColumn").toInt(0));
         passLevel_->setCurrentIndex(hasActiveStep ? activeStep.level
@@ -2094,17 +2146,20 @@ void StudioWindow::runImageRecognition(const QString &imagePath, const QImage &i
             int passes = 0;
             for (const auto &step : effectiveRouteSteps(after))
                 passes += step.kind == "pass";
-            const int uncertain =
-                after.extra.value("recognition").toObject().value("ambiguousPassageGroups").toInt();
+            const auto evidence = after.extra.value("recognition").toObject();
+            const int uncertain = evidence.value("ambiguousPassageGroups").toInt();
+            const bool orderConfirmed = evidence.value("sourceOrderConfirmed").toBool();
+            const QString review =
+                !orderConfirmed ? i18n::text("门序尚未确认，请校对起点、箭头与过门顺序。")
+                : uncertain ? i18n::text("%1 组遮挡待校对；请核对三维高度与绕行。").arg(uncertain)
+                            : i18n::text("请核对三维高度与通过顺序。");
             notice_->setText(
                 result.detectedCount
                     ? i18n::text("已生成 %1 个实体 / %2 次过门 · 本地 %3 秒 · %4")
                           .arg(result.detectedCount)
                           .arg(passes)
                           .arg(work.elapsedMs / 1000.0, 0, 'f', 2)
-                          .arg(uncertain ? i18n::text("%1 组遮挡待校对；请核对三维高度与绕行。")
-                                               .arg(uncertain)
-                                         : i18n::text("请核对三维高度与通过顺序。"))
+                          .arg(review)
                     : i18n::text("图片已导入，未生成不可靠的组件。可点击“AI 解析当前图”继续。"));
             notice_->setToolTip(
                 "<pre>" + i18n::messages(result.warnings).join("\n").toHtmlEscaped() + "</pre>");
@@ -2430,6 +2485,32 @@ bool StudioWindow::runSmokeTest(const QString &dir) {
         !gateFrameMetrics(result.document.gates[0]).centerlineModel)
         return smokeFailure(__LINE__);
     TrackDocument before = doc_;
+    // A filled lower cell must remain unavailable in the actual editing controls.
+    TrackDocument blockedUi;
+    blockedUi.gates = {makeGate("quad"), makeGate("ladder-blocked")};
+    blockedUi.gates[1].position = QPointF(15, 0);
+    applyDocument(blockedUi);
+    undo_.clear();
+    routeOrder_->setCurrentRow(1);
+    auto *levelModel = qobject_cast<QStandardItemModel *>(passLevel_->model());
+    if (!levelModel || !levelModel->item(0) || levelModel->item(0)->isEnabled() ||
+        passLevel_->currentIndex() != 1)
+        return smokeFailure(__LINE__);
+    const auto blockedBefore = toJson(doc_);
+    passLevel_->setCurrentIndex(0); // A stale/programmatic index must be rejected too.
+    if (toJson(doc_) != blockedBefore || passLevel_->currentIndex() != 1)
+        return smokeFailure(__LINE__);
+    maneuver_->setCurrentIndex(maneuver_->findData(QString("lower-upper")));
+    if (findChild<QPushButton *>("applyManeuver")->isEnabled())
+        return smokeFailure(__LINE__);
+    maneuver_->setCurrentIndex(maneuver_->findData(QString("single")));
+    if (!findChild<QPushButton *>("applyManeuver")->isEnabled())
+        return smokeFailure(__LINE__);
+    addRoutePass();
+    for (const auto &step : effectiveRouteSteps(doc_))
+        if (step.gateId == blockedUi.gates[1].id &&
+            (step.level != 1 || !routeStepGeometry(doc_, step).valid))
+            return smokeFailure(__LINE__);
     // Exercise the actual route controls: one physical assembly, repeated passes,
     // independent cells/directions, and contextual toolbar actions.
     TrackDocument maneuvers;
